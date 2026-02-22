@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, AsyncIterator
 from mcp.server.fastmcp import FastMCP, Context
 
 ##############################################################################
-# PYMOL COMMAND DEFINITIONS AND ERROR PATTERNS (Provided by user)
+# PYMOL COMMAND DEFINITIONS AND ERROR PATTERNS
 ##############################################################################
 
 PYMOL_COMMANDS = {
@@ -20,10 +20,10 @@ PYMOL_COMMANDS = {
         "pattern": r"^show\s+([\w.]+)(?:\s*,\s*(.+))?$",
         "parameters": [
             {"name": "representation", "required": True, "options": [
-                "lines", "sticks", "spheres", "surface", "mesh", "dots", 
-                "ribbon", "cartoon", "labels", "nonbonded", "nb_spheres", 
-                "ellipsoids", "volume", "slice", "extent", "dots_as_spheres", 
-                "cell", "cgo", "everything", "dashes", "angles", "dihedrals", 
+                "lines", "sticks", "spheres", "surface", "mesh", "dots",
+                "ribbon", "cartoon", "labels", "nonbonded", "nb_spheres",
+                "ellipsoids", "volume", "slice", "extent", "dots_as_spheres",
+                "cell", "cgo", "everything", "dashes", "angles", "dihedrals",
                 "licorice", "spheres", "putty"
             ]},
             {"name": "selection", "required": False, "default": "all"}
@@ -35,10 +35,10 @@ PYMOL_COMMANDS = {
         "pattern": r"^hide\s+([\w.]+)(?:\s*,\s*(.+))?$",
         "parameters": [
             {"name": "representation", "required": True, "options": [
-                "lines", "sticks", "spheres", "surface", "mesh", "dots", 
-                "ribbon", "cartoon", "labels", "nonbonded", "nb_spheres", 
-                "ellipsoids", "volume", "slice", "extent", "dots_as_spheres", 
-                "cell", "cgo", "everything", "dashes", "angles", "dihedrals", 
+                "lines", "sticks", "spheres", "surface", "mesh", "dots",
+                "ribbon", "cartoon", "labels", "nonbonded", "nb_spheres",
+                "ellipsoids", "volume", "slice", "extent", "dots_as_spheres",
+                "cell", "cgo", "everything", "dashes", "angles", "dihedrals",
                 "licorice", "spheres", "putty"
             ]},
             {"name": "selection", "required": False, "default": "all"}
@@ -61,7 +61,7 @@ PYMOL_COMMANDS = {
             {"name": "representation", "required": True},
             {"name": "selection", "required": False, "default": "all"}
         ],
-        "check_selection": True 
+        "check_selection": True
     },
     "set": {
         "description": "Sets a PyMOL setting to a specified value",
@@ -136,7 +136,7 @@ PYMOL_COMMANDS = {
         ],
         "check_selection": True
     },
-    
+
     # VIEWING OPERATIONS
     "center": {
         "description": "Centers the view on a selection",
@@ -198,7 +198,7 @@ PYMOL_COMMANDS = {
         ],
         "check_selection": False
     },
-    
+
     # FILE OPERATIONS
     "load": {
         "description": "Loads a file into PyMOL",
@@ -239,7 +239,7 @@ PYMOL_COMMANDS = {
         ],
         "check_selection": False
     },
-    
+
     # SELECTION OPERATIONS
     "select": {
         "description": "Creates a named selection",
@@ -256,7 +256,7 @@ PYMOL_COMMANDS = {
         "parameters": [],
         "check_selection": False
     },
-    
+
     # OBJECT MANIPULATION
     "create": {
         "description": "Creates a new object from a selection",
@@ -329,10 +329,10 @@ PYMOL_COMMANDS = {
         ],
         "check_selection": True
     },
-    
+
     # UTILITY AND MODIFICATION
     "alter": {
-        "description": "Alters atomic properties in a selection",
+        "description": "Alters atomic properties in a selection (expression is evaluated per-atom by PyMOL)",
         "pattern": r"^alter\s+([^,]+)(?:\s*,\s*(.+))?$",
         "parameters": [
             {"name": "selection", "required": True},
@@ -341,7 +341,7 @@ PYMOL_COMMANDS = {
         "check_selection": True
     },
     "alter_state": {
-        "description": "Alters atomic coordinates in a state",
+        "description": "Alters atomic coordinates in a state (expression is evaluated per-atom by PyMOL)",
         "pattern": r"^alter_state\s+([^,]+)(?:\s*,\s*([^,]+))?(?:\s*,\s*(.+))?$",
         "parameters": [
             {"name": "state", "required": True},
@@ -399,7 +399,7 @@ PYMOL_COMMANDS = {
         "parameters": [],
         "check_selection": False
     },
-    
+
     # UTILITY FUNCTIONS
     "util.cbc": {
         "description": "Colors by chain (Color By Chain)",
@@ -529,7 +529,7 @@ PYMOL_COMMANDS = {
         ],
         "check_selection": True
     },
-    
+
     # MOLECULAR DYNAMICS AND ANALYSIS
     "spheroid": {
         "description": "Displays atoms as smooth spheres",
@@ -586,7 +586,7 @@ PYMOL_COMMANDS = {
         ],
         "check_selection": False
     },
-    
+
     # SCENES AND MOVIES
     "scene": {
         "description": "Manages scenes for later recall",
@@ -651,7 +651,7 @@ PYMOL_COMMANDS = {
         "parameters": [],
         "check_selection": False
     },
-    
+
     # RENDERING
     "ray": {
         "description": "Performs ray-tracing",
@@ -679,19 +679,8 @@ PYMOL_COMMANDS = {
         ],
         "check_selection": False
     },
-    
+
     # CRYSTALLOGRAPHY
-    "symexp": {
-        "description": "Generates symmetry-related copies",
-        "pattern": r"^symexp\s+([^,]+)(?:\s*,\s*([^,]+))?(?:\s*,\s*([^,]+))?(?:\s*,\s*(.+))?$",
-        "parameters": [
-            {"name": "prefix", "required": True},
-            {"name": "selection", "required": True},
-            {"name": "cutoff", "required": False, "default": "20"},
-            {"name": "segi", "required": False}
-        ],
-        "check_selection": True
-    },
     "symexp": {
         "description": "Generates symmetry-related copies",
         "pattern": r"^symexp\s+([^,]+)(?:\s*,\s*([^,]+))?(?:\s*,\s*([^,]+))?(?:\s*,\s*(.+))?$",
@@ -717,7 +706,7 @@ PYMOL_COMMANDS = {
         ],
         "check_selection": True
     },
-    
+
     # OTHER
     "fab": {
         "description": "Creates a peptide chain from a sequence",
@@ -748,36 +737,6 @@ PYMOL_COMMANDS = {
         "parameters": [
             {"name": "width", "required": True},
             {"name": "height", "required": True}
-        ],
-        "check_selection": False
-    },
-    "cd": {
-        "description": "Changes the current directory",
-        "pattern": r"^cd\s+(.+)$",
-        "parameters": [
-            {"name": "path", "required": True}
-        ],
-        "check_selection": False
-    },
-    "pwd": {
-        "description": "Prints the current directory",
-        "pattern": r"^pwd$",
-        "parameters": [],
-        "check_selection": False
-    },
-    "ls": {
-        "description": "Lists files in the current directory",
-        "pattern": r"^ls(?:\s+(.+))?$",
-        "parameters": [
-            {"name": "path", "required": False}
-        ],
-        "check_selection": False
-    },
-    "system": {
-        "description": "Executes a system command",
-        "pattern": r"^system\s+(.+)$",
-        "parameters": [
-            {"name": "command", "required": True}
         ],
         "check_selection": False
     },
@@ -872,20 +831,15 @@ class PyMOLConnection:
             finally:
                 self.sock = None
 
-    def send_command(self, code: str) -> Dict[str, Any]:
+    def send_command(self, command: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Sends Python code to PyMOL via the socket plugin and returns a JSON response:
-          { "status": "success" or "error",
-            "result": {
-               "executed": bool,
-               "output": str or None,
-               "error": str or None
-            },
-            "message": "error message string if any" }
+        Sends a structured command to PyMOL via the socket plugin.
+        Instead of sending raw code, sends {"type": "structured_command",
+        "command": "show", "args": {"representation": "sticks", ...}}.
         """
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to PyMOL")
-        data = {"type": "pymol_command", "code": code}
+        data = {"type": "structured_command", "command": command, "args": args}
         try:
             self.sock.sendall(json.dumps(data).encode('utf-8'))
             self.sock.settimeout(10.0)
@@ -918,8 +872,7 @@ def get_pymol_connection() -> PyMOLConnection:
     global _global_connection
     if _global_connection is not None:
         try:
-            # Test if connection is alive
-            _global_connection.send_command("pass")
+            _global_connection.send_command("refresh", {})
             return _global_connection
         except:
             try:
@@ -935,13 +888,13 @@ def get_pymol_connection() -> PyMOLConnection:
     return _global_connection
 
 ##############################################################################
-# PARSING USER INPUT TO PYMOL COMMANDS
+# PARSING USER INPUT TO STRUCTURED COMMANDS
 ##############################################################################
 
-def parse_pymol_input(input_text: str) -> str:
+def parse_pymol_input(input_text: str) -> tuple[str, Dict[str, Any]]:
     """
-    Attempts to match the user input against known PYMOL_COMMANDS patterns.
-    If matched, extracts parameters and builds the final Python code for PyMOL.
+    Matches user input against known PYMOL_COMMANDS patterns.
+    Returns (command_name, param_values) tuple.
     Raises ValueError if no command matches or if there's a parameter error.
     """
     text_stripped = input_text.strip()
@@ -950,7 +903,6 @@ def parse_pymol_input(input_text: str) -> str:
         match = pattern.match(text_stripped)
         if match:
             groups = match.groups()
-            # Extract parameter definitions
             params_def = cmd_info["parameters"]
             param_values = {}
             for i, param_def in enumerate(params_def):
@@ -958,7 +910,6 @@ def parse_pymol_input(input_text: str) -> str:
                 required = param_def.get("required", False)
                 default_val = param_def.get("default", None)
                 options = param_def.get("options", [])
-                # Attempt to fetch from match group
                 value = None
                 if i < len(groups) and groups[i] is not None:
                     value = groups[i].strip()
@@ -968,69 +919,10 @@ def parse_pymol_input(input_text: str) -> str:
                     value = default_val
                 if options and value and value not in options:
                     raise ValueError(f"Parameter '{param_name}' must be one of {options}")
-                param_values[param_name] = value if value is not None else ""
-            # (Optional) If check_selection is True, we could do extra checks
-            # But for simplicity, just build PyMOL code
-            return build_pymol_code(cmd_name, param_values)
+                if value is not None:
+                    param_values[param_name] = value
+            return (cmd_name, param_values)
     raise ValueError("No recognized PyMOL command pattern matched this input.")
-
-def build_pymol_code(command_name: str, param_values: Dict[str, Any]) -> str:
-    """
-    Translates a recognized command plus parameters into Python code for PyMOL.
-    This is a naive approach that constructs a single cmd.* invocation.
-    Modify as needed for more complex logic.
-    """
-    # Example approach: "cmd.show('sticks', 'sele')"
-    # For 'show' -> "cmd.show('sticks', 'all')"
-    # This is simplified. Real approach might be more advanced.
-    if command_name == "help":
-        # We can do a special return for help
-        cmd_obj = param_values.get("command") or ""
-        if cmd_obj and cmd_obj in PYMOL_COMMANDS:
-            return f"print('Help for {cmd_obj}: {PYMOL_COMMANDS[cmd_obj]['description']}')"
-        return "print('List of PyMOL commands...')"
-
-    # Generic pattern (the user can adapt this to each command's syntax)
-    py_code = []
-    py_code.append("from pymol import cmd")
-    if command_name in ["util.cbc", "util.cbaw", "util.cbag", "util.cbac", "util.cbam",
-                        "util.cbay", "util.cbas", "util.cbab", "util.cbao", "util.cbap",
-                        "util.cbak", "util.chainbow", "util.rainbow", "util.ss",
-                        "util.color_by_element", "util.color_secondary"]:
-        # handle util.* style calls
-        # e.g. "import util" doesn't exist in PyMOL by default. It's cmd.util.* typically
-        selection = param_values.get("selection","all")
-        # e.g. "cmd.util.chainbow('all')"
-        # but realistically "util.chainbow(...)" might be "cmd.do('util.chainbow all')"
-        call_code = f"cmd.do('{command_name} {selection}')"
-        py_code.append(call_code)
-        return "; ".join(py_code)
-
-    # For typical direct 'cmd' calls:
-    # We'll do a simple switch
-    if command_name == "show":
-        representation = param_values["representation"]
-        selection = param_values["selection"]
-        py_code.append(f"cmd.show('{representation}', '{selection}')")
-    elif command_name == "hide":
-        representation = param_values["representation"]
-        selection = param_values["selection"]
-        py_code.append(f"cmd.hide('{representation}', '{selection}')")
-    elif command_name == "color":
-        color_val = param_values["color"]
-        selection = param_values["selection"]
-        py_code.append(f"cmd.color('{color_val}', '{selection}')")
-    else:
-        # fallback, naive approach: "cmd.do('original command')"
-        # build the original command as a string
-        raw_cmd = command_name
-        # We skip the prefix if it's something like "util."
-        for k,v in param_values.items():
-            if v.strip():
-                raw_cmd += f" {v}"
-        py_code.append(f"cmd.do('{raw_cmd}')")
-
-    return "; ".join(py_code)
 
 def analyze_pymol_output(output_text: str) -> Optional[str]:
     """
@@ -1051,7 +943,7 @@ def analyze_pymol_output(output_text: str) -> Optional[str]:
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     try:
-        logger.info("Starting PyMOL MCP server (with command parsing).")
+        logger.info("Starting PyMOL MCP server (structured command mode).")
         try:
             get_pymol_connection()
         except Exception as e:
@@ -1065,7 +957,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
         logger.info("PyMOL MCP server shut down.")
 
 mcp = FastMCP("PyMOLMCPServer",
-              description="PyMOL integration with advanced command parsing",
+              description="PyMOL integration with structured command dispatch (no arbitrary code execution)",
               lifespan=server_lifespan)
 
 ##############################################################################
@@ -1075,24 +967,31 @@ mcp = FastMCP("PyMOLMCPServer",
 @mcp.tool()
 def parse_and_execute(ctx: Context, user_input: str) -> str:
     """
-    Parses a text command against PYMOL_COMMANDS, builds PyMOL code, 
-    executes it, and analyzes any error patterns in the output.
+    Parses a text command against PYMOL_COMMANDS, sends a structured command
+    to PyMOL (no arbitrary code execution), and analyzes any error patterns
+    in the output.
     """
     try:
-        code = parse_pymol_input(user_input)
+        command_name, args = parse_pymol_input(user_input)
     except ValueError as ve:
         return f"No recognized PyMOL command or parameter issue: {ve}"
     except Exception as e:
         return f"Parsing error: {e}"
 
+    # Handle help locally
+    if command_name == "help":
+        cmd_obj = args.get("command", "")
+        if cmd_obj and cmd_obj in PYMOL_COMMANDS:
+            return f"Help for {cmd_obj}: {PYMOL_COMMANDS[cmd_obj]['description']}"
+        return "Available commands: " + ", ".join(sorted(PYMOL_COMMANDS.keys()))
+
     try:
         conn = get_pymol_connection()
-        response = conn.send_command(code)
+        response = conn.send_command(command_name, args)
         status = response.get("status", "error")
         if status == "success":
             res = response.get("result", {})
-            out = res.get("output","") if isinstance(res, dict) else ""
-            # If there's output, check known error patterns
+            out = res.get("output","") if isinstance(res, dict) else str(res)
             check_err = analyze_pymol_output(out)
             if check_err:
                 return f"PyMOL command completed but possible error:\n{check_err}\nRaw Output:\n{out}"
