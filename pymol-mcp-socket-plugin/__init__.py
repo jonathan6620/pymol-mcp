@@ -480,8 +480,8 @@ def build_command_dispatcher(cmd):
     util_commands = [
         "util.cbc", "util.cbaw", "util.cbag", "util.cbac", "util.cbam",
         "util.cbay", "util.cbas", "util.cbab", "util.cbao", "util.cbap",
-        "util.cbak", "util.chainbow", "util.rainbow", "util.ss",
-        "util.color_by_element", "util.color_secondary",
+        "util.cbak", "util.chainbow", "util.rainbow",
+        "util.color_by_element",
     ]
     for util_cmd in util_commands:
         dispatcher[util_cmd] = lambda args, name=util_cmd: _do_command(name, args)

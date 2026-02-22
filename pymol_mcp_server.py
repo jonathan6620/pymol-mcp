@@ -24,7 +24,7 @@ PYMOL_COMMANDS = {
                 "ribbon", "cartoon", "labels", "nonbonded", "nb_spheres",
                 "ellipsoids", "volume", "slice", "extent", "dots_as_spheres",
                 "cell", "cgo", "everything", "dashes", "angles", "dihedrals",
-                "licorice", "spheres", "putty"
+                "licorice", "putty"
             ]},
             {"name": "selection", "required": False, "default": "all"}
         ],
@@ -39,7 +39,7 @@ PYMOL_COMMANDS = {
                 "ribbon", "cartoon", "labels", "nonbonded", "nb_spheres",
                 "ellipsoids", "volume", "slice", "extent", "dots_as_spheres",
                 "cell", "cgo", "everything", "dashes", "angles", "dihedrals",
-                "licorice", "spheres", "putty"
+                "licorice", "putty"
             ]},
             {"name": "selection", "required": False, "default": "all"}
         ],
@@ -505,25 +505,18 @@ PYMOL_COMMANDS = {
         ],
         "check_selection": True
     },
-    "util.ss": {
-        "description": "Colors by secondary structure",
-        "pattern": r"^util\.ss(?:\s+(.+))?$",
+    "color_ss": {
+        "description": "Colors by secondary structure: helices red, sheets yellow, loops green",
+        "pattern": r"^color_ss(?:\s+(.+))?$",
         "parameters": [
             {"name": "selection", "required": False, "default": "all"}
         ],
-        "check_selection": True
+        "check_selection": True,
+        "composite": True
     },
     "util.color_by_element": {
         "description": "Colors atoms by their element",
         "pattern": r"^util\.color_by_element(?:\s+(.+))?$",
-        "parameters": [
-            {"name": "selection", "required": False, "default": "all"}
-        ],
-        "check_selection": True
-    },
-    "util.color_secondary": {
-        "description": "Colors secondary structure elements",
-        "pattern": r"^util\.color_secondary(?:\s+(.+))?$",
         "parameters": [
             {"name": "selection", "required": False, "default": "all"}
         ],
@@ -929,10 +922,9 @@ def analyze_pymol_output(output_text: str) -> Optional[str]:
     Attempts to map known error patterns in the PyMOL output to a user-friendly error.
     Returns None if no known error patterns are matched.
     """
-    lower_out = output_text.lower()
     for error_label, patterns in ERROR_PATTERNS.items():
         for p in patterns:
-            if re.search(p.lower(), lower_out):
+            if re.search(p, output_text, re.IGNORECASE):
                 return f"{error_label} detected: {p}"
     return None
 
@@ -984,6 +976,20 @@ def parse_and_execute(ctx: Context, user_input: str) -> str:
         if cmd_obj and cmd_obj in PYMOL_COMMANDS:
             return f"Help for {cmd_obj}: {PYMOL_COMMANDS[cmd_obj]['description']}"
         return "Available commands: " + ", ".join(sorted(PYMOL_COMMANDS.keys()))
+
+    # Handle composite commands locally
+    if command_name == "color_ss":
+        sel = args.get("selection", "all")
+        try:
+            conn = get_pymol_connection()
+            results = []
+            for color, ss in [("red", "h"), ("yellow", "s"), ("green", "l+")]:
+                ss_sel = f"(ss {ss}) and ({sel})" if sel != "all" else f"ss {ss}"
+                resp = conn.send_command("color", {"color": color, "selection": ss_sel})
+                results.append(f"{ss}: {resp.get('status', 'error')}")
+            return f"Colored by secondary structure ({sel}): helices=red, sheets=yellow, loops=green"
+        except Exception as e:
+            return f"Execution error: {e}"
 
     try:
         conn = get_pymol_connection()
