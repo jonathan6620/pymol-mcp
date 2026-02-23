@@ -2,12 +2,13 @@
 Comprehensive test suite for PyMOL MCP server command definitions.
 
 Tests:
-1. Structural integrity of PYMOL_COMMANDS definitions
+1. Structural integrity of PYMOL_COMMANDS definitions (now model-enforced)
 2. Regex pattern matching against real PyMOL command syntax
 3. Parameter parsing via parse_pymol_input()
 4. Error pattern detection via analyze_pymol_output()
 5. Sync between MCP server command defs and socket plugin dispatcher
 6. Edge cases, whitespace handling, case sensitivity
+7. Pydantic model validation
 """
 
 import re
@@ -23,9 +24,18 @@ sys.modules["mcp.server.fastmcp"] = MagicMock()
 
 sys.path.insert(0, "/home/jward/pymol-mcp")
 
+from models import (
+    ParameterDef,
+    CommandDef,
+    ErrorCategory,
+    SocketRequest,
+    SocketResponse,
+    ParseResult,
+)
 from pymol_mcp_server import (
     PYMOL_COMMANDS,
     ERROR_PATTERNS,
+    PyMOLConnection,
     parse_pymol_input,
     analyze_pymol_output,
 )
@@ -37,89 +47,92 @@ from pymol_mcp_server import (
 
 
 class TestCommandDefinitionStructure:
-    """Verify every command definition has required keys and valid types."""
+    """Verify every command definition has required fields and valid types.
 
-    REQUIRED_KEYS = {"description", "pattern", "parameters", "check_selection"}
+    Most of these checks are now enforced by Pydantic at construction time.
+    These tests remain as regression tests.
+    """
 
-    def test_all_commands_have_required_keys(self):
+    def test_all_commands_are_command_def_instances(self):
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            for key in self.REQUIRED_KEYS:
-                assert key in cmd_info, (
-                    f"Command '{cmd_name}' missing required key '{key}'"
-                )
+            assert isinstance(cmd_info, CommandDef), (
+                f"Command '{cmd_name}' is not a CommandDef instance"
+            )
 
     def test_descriptions_are_nonempty_strings(self):
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            desc = cmd_info["description"]
-            assert isinstance(desc, str) and len(desc) > 0, (
+            assert isinstance(cmd_info.description, str) and len(cmd_info.description) > 0, (
                 f"Command '{cmd_name}' has empty or non-string description"
             )
 
     def test_patterns_are_valid_regex(self):
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            pattern = cmd_info["pattern"]
             try:
-                re.compile(pattern)
+                re.compile(cmd_info.pattern)
             except re.error as e:
                 pytest.fail(f"Command '{cmd_name}' has invalid regex: {e}")
 
     def test_patterns_are_anchored(self):
         """Patterns should be anchored with ^ and $ to avoid partial matches."""
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            pattern = cmd_info["pattern"]
-            assert pattern.startswith("^"), (
+            assert cmd_info.pattern.startswith("^"), (
                 f"Command '{cmd_name}' pattern not anchored at start"
             )
-            assert pattern.endswith("$"), (
+            assert cmd_info.pattern.endswith("$"), (
                 f"Command '{cmd_name}' pattern not anchored at end"
             )
 
     def test_parameters_is_list(self):
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            assert isinstance(cmd_info["parameters"], list), (
+            assert isinstance(cmd_info.parameters, list), (
                 f"Command '{cmd_name}' parameters is not a list"
             )
 
+    def test_parameter_defs_are_parameter_def_instances(self):
+        for cmd_name, cmd_info in PYMOL_COMMANDS.items():
+            for i, param in enumerate(cmd_info.parameters):
+                assert isinstance(param, ParameterDef), (
+                    f"Command '{cmd_name}' param[{i}] is not a ParameterDef"
+                )
+
     def test_parameter_defs_have_name_and_required(self):
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            for i, param in enumerate(cmd_info["parameters"]):
-                assert "name" in param, (
-                    f"Command '{cmd_name}' param[{i}] missing 'name'"
+            for i, param in enumerate(cmd_info.parameters):
+                assert param.name, (
+                    f"Command '{cmd_name}' param[{i}] has no name"
                 )
-                assert "required" in param, (
-                    f"Command '{cmd_name}' param[{i}] ('{param['name']}') missing 'required'"
+                assert isinstance(param.required, bool), (
+                    f"Command '{cmd_name}' param[{i}] ('{param.name}') required is not bool"
                 )
 
     def test_optional_params_have_default_or_are_truly_optional(self):
         """Optional params should typically have a default value."""
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            for param in cmd_info["parameters"]:
-                if not param["required"] and "default" not in param:
-                    # This is allowed but worth noting - param is purely optional
+            for param in cmd_info.parameters:
+                if not param.required and param.default is None:
                     pass  # acceptable: no default means param may be omitted
 
     def test_check_selection_is_bool(self):
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            assert isinstance(cmd_info["check_selection"], bool), (
+            assert isinstance(cmd_info.check_selection, bool), (
                 f"Command '{cmd_name}' check_selection is not bool"
             )
 
     def test_no_duplicate_param_names(self):
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            names = [p["name"] for p in cmd_info["parameters"]]
+            names = [p.name for p in cmd_info.parameters]
             assert len(names) == len(set(names)), (
                 f"Command '{cmd_name}' has duplicate parameter names: {names}"
             )
 
     def test_options_lists_have_no_duplicates(self):
-        """Check for duplicate entries in options lists (e.g. 'spheres' listed twice)."""
+        """Check for duplicate entries in options lists."""
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            for param in cmd_info["parameters"]:
-                options = param.get("options", [])
-                if options:
-                    dupes = [x for x in options if options.count(x) > 1]
+            for param in cmd_info.parameters:
+                if param.options:
+                    dupes = [x for x in param.options if param.options.count(x) > 1]
                     assert len(dupes) == 0, (
-                        f"Command '{cmd_name}' param '{param['name']}' "
+                        f"Command '{cmd_name}' param '{param.name}' "
                         f"has duplicate options: {set(dupes)}"
                     )
 
@@ -130,10 +143,9 @@ class TestCaptureGroupParameterAlignment:
     def test_capture_groups_match_parameter_count(self):
         """Number of regex capture groups should match number of parameters."""
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            pattern = cmd_info["pattern"]
-            compiled = re.compile(pattern)
+            compiled = re.compile(cmd_info.pattern)
             num_groups = compiled.groups
-            num_params = len(cmd_info["parameters"])
+            num_params = len(cmd_info.parameters)
             assert num_groups == num_params, (
                 f"Command '{cmd_name}': {num_groups} capture groups "
                 f"but {num_params} parameters defined"
@@ -774,7 +786,7 @@ class TestServerPluginSync:
         """Every non-composite server command should have a plugin handler."""
         missing = []
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            if cmd_info.get("composite"):
+            if cmd_info.composite:
                 continue  # composite commands are handled server-side
             if cmd_name not in plugin_dispatcher_commands:
                 missing.append(cmd_name)
@@ -1020,17 +1032,358 @@ class TestCompositeCommands:
     """Test composite command handling."""
 
     def test_color_ss_marked_composite(self):
-        assert PYMOL_COMMANDS["color_ss"].get("composite") is True
+        assert PYMOL_COMMANDS["color_ss"].composite is True
 
     def test_no_other_commands_marked_composite(self):
         """Only color_ss should be composite currently."""
         composites = [
             name for name, info in PYMOL_COMMANDS.items()
-            if info.get("composite")
+            if info.composite
         ]
         assert composites == ["color_ss"], (
             f"Unexpected composite commands: {composites}"
         )
+
+
+# ============================================================================
+# 15. SERVER MODULE INTEGRITY
+# ============================================================================
+
+
+class TestServerModuleIntegrity:
+    """Verify the MCP server module loads correctly and is properly configured.
+
+    These tests catch issues like incompatible keyword arguments in FastMCP
+    (e.g. 'description' vs 'instructions') that prevent the server from starting.
+    """
+
+    def test_server_module_imports_without_mock(self):
+        """The server module should import cleanly with the real mcp package."""
+        import importlib
+        import subprocess
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from pymol_mcp_server import PYMOL_COMMANDS, ERROR_PATTERNS, "
+                "parse_pymol_input, analyze_pymol_output; "
+                "print('imports_ok')"
+            ],
+            capture_output=True, text=True,
+            cwd="/home/jward/pymol-mcp",
+        )
+        assert result.returncode == 0, (
+            f"Server module failed to import:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "imports_ok" in result.stdout
+
+    def test_fastmcp_instantiation(self):
+        """FastMCP should instantiate without TypeError on keyword args.
+
+        Catches the description->instructions rename in mcp>=1.1.0.
+        """
+        import subprocess
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from pymol_mcp_server import mcp; "
+                "print(f'name={mcp.name}')"
+            ],
+            capture_output=True, text=True,
+            cwd="/home/jward/pymol-mcp",
+        )
+        assert result.returncode == 0, (
+            f"FastMCP instantiation failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "name=PyMOLMCPServer" in result.stdout
+
+    def test_fastmcp_does_not_accept_description_kwarg(self):
+        """Verify that 'description' is NOT a valid FastMCP kwarg (it was renamed).
+
+        This documents the API change so the wrong kwarg isn't reintroduced.
+        Uses subprocess to avoid the mocked mcp module in this test file.
+        """
+        import subprocess
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from mcp.server.fastmcp import FastMCP; "
+                "import inspect; "
+                "sig = inspect.signature(FastMCP.__init__); "
+                "print('description' not in sig.parameters)"
+            ],
+            capture_output=True, text=True,
+            cwd="/home/jward/pymol-mcp",
+        )
+        assert result.returncode == 0, f"Failed: {result.stderr}"
+        assert "True" in result.stdout, (
+            "FastMCP.__init__ unexpectedly accepts 'description'. "
+            "If the mcp package restored this kwarg, update pymol_mcp_server.py accordingly."
+        )
+
+    def test_fastmcp_accepts_instructions_kwarg(self):
+        """Verify that 'instructions' is the correct FastMCP kwarg.
+
+        Uses subprocess to avoid the mocked mcp module in this test file.
+        """
+        import subprocess
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from mcp.server.fastmcp import FastMCP; "
+                "import inspect; "
+                "sig = inspect.signature(FastMCP.__init__); "
+                "print('instructions' in sig.parameters)"
+            ],
+            capture_output=True, text=True,
+            cwd="/home/jward/pymol-mcp",
+        )
+        assert result.returncode == 0, f"Failed: {result.stderr}"
+        assert "True" in result.stdout, (
+            "FastMCP.__init__ does not accept 'instructions'. "
+            "The mcp package API may have changed again."
+        )
+
+    def test_parse_and_execute_tool_registered(self):
+        """The parse_and_execute function should be registered as an MCP tool."""
+        import subprocess
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from pymol_mcp_server import mcp; "
+                "tools = [t.name for t in mcp._tool_manager.list_tools()]; "
+                "print(f'tools={tools}')"
+            ],
+            capture_output=True, text=True,
+            cwd="/home/jward/pymol-mcp",
+        )
+        assert result.returncode == 0, (
+            f"Failed to list tools:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "parse_and_execute" in result.stdout, (
+            f"parse_and_execute not registered as a tool. Output: {result.stdout}"
+        )
+
+
+# ============================================================================
+# 16. SOCKET CONNECTION CONFIGURATION
+# ============================================================================
+
+
+class TestSocketConnectionDefaults:
+    """Verify socket connection defaults match between server and plugin."""
+
+    def test_default_port_is_9876(self):
+        """Both server and plugin should use port 9876 by default."""
+        import subprocess
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from pymol_mcp_server import PyMOLConnection; "
+                "conn = PyMOLConnection(); "
+                "print(f'host={conn.host} port={conn.port}')"
+            ],
+            capture_output=True, text=True,
+            cwd="/home/jward/pymol-mcp",
+        )
+        assert result.returncode == 0, f"Import failed: {result.stderr}"
+        assert "port=9876" in result.stdout
+        assert "host=localhost" in result.stdout
+
+    def test_plugin_default_port_matches_server(self):
+        """The plugin's default port should match the server's default."""
+        plugin_path = "/home/jward/pymol-mcp/pymol-mcp-socket-plugin/__init__.py"
+        with open(plugin_path) as f:
+            source = f.read()
+        assert "current_port = 9876" in source, (
+            "Plugin default port is not 9876 — server and plugin are out of sync"
+        )
+
+
+# ============================================================================
+# 17. PYDANTIC MODEL VALIDATION
+# ============================================================================
+
+
+class TestPydanticModels:
+    """Test Pydantic model validation rules."""
+
+    # --- ParameterDef ---
+
+    def test_parameter_def_valid(self):
+        p = ParameterDef(name="test", required=True)
+        assert p.name == "test"
+        assert p.required is True
+        assert p.default is None
+        assert p.options == []
+
+    def test_parameter_def_with_options(self):
+        p = ParameterDef(name="rep", required=True, options=["a", "b", "c"])
+        assert p.options == ["a", "b", "c"]
+
+    def test_parameter_def_duplicate_options_rejected(self):
+        with pytest.raises(Exception, match="[Dd]uplicate"):
+            ParameterDef(name="rep", required=True, options=["a", "b", "a"])
+
+    # --- CommandDef ---
+
+    def test_command_def_valid(self):
+        cmd = CommandDef(
+            description="Test command",
+            pattern=r"^test$",
+            parameters=[],
+            check_selection=False,
+        )
+        assert cmd.description == "Test command"
+        assert cmd.composite is False
+
+    def test_command_def_invalid_regex_rejected(self):
+        with pytest.raises(Exception, match="[Ii]nvalid regex"):
+            CommandDef(
+                description="Bad",
+                pattern=r"^test[[$",
+                parameters=[],
+                check_selection=False,
+            )
+
+    def test_command_def_unanchored_start_rejected(self):
+        with pytest.raises(Exception, match="anchored at start"):
+            CommandDef(
+                description="Bad",
+                pattern=r"test$",
+                parameters=[],
+                check_selection=False,
+            )
+
+    def test_command_def_unanchored_end_rejected(self):
+        with pytest.raises(Exception, match="anchored at end"):
+            CommandDef(
+                description="Bad",
+                pattern=r"^test",
+                parameters=[],
+                check_selection=False,
+            )
+
+    def test_command_def_empty_description_rejected(self):
+        with pytest.raises(Exception, match="[Dd]escription"):
+            CommandDef(
+                description="",
+                pattern=r"^test$",
+                parameters=[],
+                check_selection=False,
+            )
+
+    def test_command_def_whitespace_description_rejected(self):
+        with pytest.raises(Exception, match="[Dd]escription"):
+            CommandDef(
+                description="   ",
+                pattern=r"^test$",
+                parameters=[],
+                check_selection=False,
+            )
+
+    def test_command_def_duplicate_param_names_rejected(self):
+        with pytest.raises(Exception, match="[Dd]uplicate"):
+            CommandDef(
+                description="Bad",
+                pattern=r"^test$",
+                parameters=[
+                    ParameterDef(name="a", required=True),
+                    ParameterDef(name="a", required=False),
+                ],
+                check_selection=False,
+            )
+
+    # --- ErrorCategory ---
+
+    def test_error_category_valid(self):
+        ec = ErrorCategory(label="SYNTAX_ERROR", patterns=[r"Syntax error"])
+        assert ec.label == "SYNTAX_ERROR"
+
+    def test_error_category_lowercase_label_rejected(self):
+        with pytest.raises(Exception, match="UPPERCASE"):
+            ErrorCategory(label="syntax_error", patterns=[r"Syntax error"])
+
+    def test_error_category_invalid_regex_rejected(self):
+        with pytest.raises(Exception, match="[Ii]nvalid regex"):
+            ErrorCategory(label="BAD", patterns=[r"[[$"])
+
+    # --- ParseResult ---
+
+    def test_parse_result_tuple_unpacking(self):
+        pr = ParseResult(command="show", args={"representation": "cartoon"})
+        cmd, args = pr
+        assert cmd == "show"
+        assert args == {"representation": "cartoon"}
+
+    def test_parse_result_attribute_access(self):
+        pr = ParseResult(command="fetch", args={"code": "1ubq"})
+        assert pr.command == "fetch"
+        assert pr.args == {"code": "1ubq"}
+
+    def test_parse_result_from_parse_pymol_input(self):
+        """parse_pymol_input returns ParseResult that supports unpacking."""
+        result = parse_pymol_input("show cartoon")
+        assert isinstance(result, ParseResult)
+        cmd, args = result
+        assert cmd == "show"
+
+    # --- SocketRequest ---
+
+    def test_socket_request_serialization(self):
+        req = SocketRequest(command="show", args={"representation": "sticks"})
+        data = req.model_dump()
+        assert data == {
+            "type": "structured_command",
+            "command": "show",
+            "args": {"representation": "sticks"},
+        }
+
+    def test_socket_request_default_type(self):
+        req = SocketRequest(command="fetch", args={"code": "1ubq"})
+        assert req.type == "structured_command"
+
+    # --- SocketResponse ---
+
+    def test_socket_response_success(self):
+        resp = SocketResponse(status="success", result={"output": "OK"})
+        assert resp.status == "success"
+        assert resp.result == {"output": "OK"}
+        assert resp.message is None
+
+    def test_socket_response_error(self):
+        resp = SocketResponse(status="error", message="Not found")
+        assert resp.status == "error"
+        assert resp.message == "Not found"
+
+    def test_socket_response_invalid_status_rejected(self):
+        with pytest.raises(Exception):
+            SocketResponse(status="unknown")
+
+    # --- PyMOLConnection port validation ---
+
+    def test_port_validation_valid(self):
+        conn = PyMOLConnection(port=9876)
+        assert conn.port == 9876
+
+    def test_port_validation_min(self):
+        conn = PyMOLConnection(port=1)
+        assert conn.port == 1
+
+    def test_port_validation_max(self):
+        conn = PyMOLConnection(port=65535)
+        assert conn.port == 65535
+
+    def test_port_validation_zero_rejected(self):
+        with pytest.raises(ValueError, match="[Pp]ort"):
+            PyMOLConnection(port=0)
+
+    def test_port_validation_negative_rejected(self):
+        with pytest.raises(ValueError, match="[Pp]ort"):
+            PyMOLConnection(port=-1)
+
+    def test_port_validation_too_large_rejected(self):
+        with pytest.raises(ValueError, match="[Pp]ort"):
+            PyMOLConnection(port=65536)
 
 
 if __name__ == "__main__":
