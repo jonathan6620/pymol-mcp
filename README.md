@@ -18,9 +18,9 @@ PyMOL-MCP connects PyMOL to Claude AI through the Model Context Protocol (MCP), 
 ## Prerequisites
 
 - PyMOL installed on your system
-- Claude Desktop or Claude Code 
+- Claude Desktop or Claude Code
 - Git
-- Make, if you want to use the [Quick Start](#quick-start) 
+- Make, if you want to use the [Quick Start](#quick-start)
 
 ## Quick Start
 
@@ -163,26 +163,13 @@ Restart PyMOL afterwards, so it picks up the new plugin.
 
 ### Step 5: Start the PyMOL Socket Listener
 
-Before Claude can send commands to PyMOL, the socket listener must be active. There are two options:
-
-#### Option A: Manual start (via GUI)
-
-1. In PyMOL, go to **Plugin > PyMol MCP Socket Plugin**
-2. A dialog will appear with a port number (default: **9876**) and a "Start Listening" button
-3. Click **"Start Listening"**
-4. The status label should turn green and read **"Listening on port 9876"**
-
-> **Note:** The manual method requires clicking "Start Listening" each time you open PyMOL.
-
-#### Option B: Auto-start on PyMOL launch (via `.pymolrc.py`)
-
-Run this to configure PyMOL to launch the plugin when the app opens.
+Before Claude can send commands to PyMOL, the socket listener must be active. Run this command to configure PyMOL to launch the plugin when the app opens.
 
 ```bash
 make install-pymolrc
 ```
 
-Alternatively, create or edit `~/.pymolrc.py`.
+If `make` is not installed, create or edit `~/.pymolrc.py`.
 
 ```python
 import importlib, threading, time
@@ -251,15 +238,12 @@ Here are some examples of what you can ask Claude to do:
 
 - **Connection issues**: Make sure the PyMOL plugin is listening before attempting to connect from Claude
 - **Command errors**: Check the PyMOL output window for any error messages
-- **`MCP socket plugin not installed`** on PyMOL startup: run
-  `pymol -cq install_plugin.py` (Step 4). If you installed through the Plugin
-  Manager, you probably have a stale copy; the script replaces it.
-- **`AttributeError: no attribute 'start_socket_server'`**: an outdated copy of
-  the plugin. Rerun `pymol -cq install_plugin.py`.
+- **`MCP socket plugin not installed`** on PyMOL startup, run
+  `pymol -cq install_plugin.py`
 - **Dialog says "Not listening" while the port is in use**: your `~/.pymolrc.py`
   loads the plugin by file path, giving the dialog and the listener separate
   copies of the module. Use the snippet in
-  [Step 5 Option B](#option-b-auto-start-on-pymol-launch-via-pymolrcpy).
+  [Step 5](#step-5-start-the-pymol-socket-listener).
 - **`~/.pymolrc.py` is ignored**: PyMOL searches the working directory before
   `$HOME` and stops at the first directory holding a `pymolrc*` or `.pymolrc*`
   file, so launching from such a directory shadows your home config. To print
@@ -283,7 +267,6 @@ Here are some examples of what you can ask Claude to do:
 - The socket connection requires both PyMOL and Claude to be running on the same machine
 - Some complex operations may need to be broken down into simpler steps
 - Always save your work before using experimental features
-- The upstream project runs a Bio-MCP Slack community for troubleshooting and feedback on Bio-MCPs: https://join.slack.com/t/bio-mcpslack/shared_invite/zt-31z4pho39-K5tb6sZ1hUvrFyoPmKihAA
 
 ## Contributing
 
