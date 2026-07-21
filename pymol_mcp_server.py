@@ -926,7 +926,13 @@ def parse_pymol_input(input_text: str) -> ParseResult:
                 if value is not None:
                     param_values[param_def.name] = value
             return ParseResult(command=cmd_name, args=param_values)
-    raise ValueError("No recognized PyMOL command pattern matched this input.")
+    first_word = text_stripped.split()[0] if text_stripped.split() else ""
+    raise ValueError(
+        "No recognized PyMOL command pattern matched this input. Input must be "
+        "literal PyMOL syntax, one command per call -- natural language is not "
+        f"accepted. '{first_word}' is not a known command; call list_commands "
+        "to see the available ones."
+    )
 
 def analyze_pymol_output(output_text: str) -> Optional[str]:
     """
@@ -959,8 +965,25 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
             _global_connection = None
         logger.info("PyMOL MCP server shut down.")
 
+SERVER_INSTRUCTIONS = """\
+PyMOL integration with structured command dispatch (no arbitrary code execution).
+
+This server does NOT accept natural language. `parse_and_execute` matches its
+input against a fixed table of PyMOL command patterns, so you must translate the
+user's request into literal PyMOL syntax before calling it.
+
+Three rules cover most mistakes:
+  1. One command per call. Split a multi-step request into separate calls.
+  2. A selection is a comma-separated second argument, not a prepositional
+     phrase: `show cartoon, chain A` -- not `show cartoon for chain A`.
+  3. `fetch` downloads by PDB accession code; `load` reads a local file path.
+     "Load PDB 1UBQ" means `fetch 1ubq`.
+
+Call `list_commands` for the full command table with exact patterns. Prefer it
+over guessing: unrecognized input is rejected, not interpreted."""
+
 mcp = FastMCP("PyMOLMCPServer",
-              instructions="PyMOL integration with structured command dispatch (no arbitrary code execution)",
+              instructions=SERVER_INSTRUCTIONS,
               lifespan=server_lifespan)
 
 ##############################################################################
@@ -970,9 +993,38 @@ mcp = FastMCP("PyMOLMCPServer",
 @mcp.tool()
 def parse_and_execute(ctx: Context, user_input: str) -> str:
     """
-    Parses a text command against PYMOL_COMMANDS, sends a structured command
-    to PyMOL (no arbitrary code execution), and analyzes any error patterns
-    in the output.
+    Executes a single PyMOL command given in literal PyMOL syntax.
+
+    NOT a natural-language interface. `user_input` is matched against a fixed
+    table of command patterns; anything else is rejected rather than guessed at.
+    Translate the user's request into PyMOL syntax yourself, then call this once
+    per command. Use `list_commands` to look up exact syntax.
+
+    Translating requests:
+      "Load PDB 1UBQ and show it as cartoon"
+          -> parse_and_execute("fetch 1ubq")
+          -> parse_and_execute("as cartoon, 1ubq")
+      "Colour chain A red"        -> "color red, chain A"
+      "Show sticks for residues 1-50"  -> "show sticks, resi 1-50"
+      "Open /data/model.pdb"      -> "load /data/model.pdb"
+      "Select the binding site"   -> "select site, byres (polymer within 5 of ligand)"
+
+    Common mistakes:
+      - Multiple commands in one call. "fetch 1ubq and show cartoon" fails;
+        the whole string is read as one filename/code.
+      - `load` for a PDB ID. `load` takes a file path; use `fetch` for a
+        4-character accession code like 1ubq.
+      - Selections as prose. Write `show cartoon, chain A`, not
+        `show cartoon for chain A` -- the selection is a second argument
+        after a comma.
+      - Conversational filler. "please show cartoon" does not match; send
+        "show cartoon".
+
+    Selections use full PyMOL algebra (`chain A and resi 1-50`, `not solvent`,
+    `byres (... within 5 of ...)`). Commas separate arguments, so a selection
+    containing a comma must be rewritten with `+` (`resi 1+2+3`).
+
+    Returns PyMOL's output, or a message describing the parse/execution failure.
     """
     try:
         result = parse_pymol_input(user_input)
@@ -1023,6 +1075,63 @@ def parse_and_execute(ctx: Context, user_input: str) -> str:
             return f"Command error: {msg}"
     except Exception as e:
         return f"Execution error: {e}"
+
+##############################################################################
+# MCP TOOL: list_commands
+##############################################################################
+
+def _describe_command(name: str, cmd: CommandDef) -> str:
+    """Renders one command's full detail from its definition."""
+    lines = [f"{name} -- {cmd.description}", f"  pattern: {cmd.pattern}"]
+    for p in cmd.parameters:
+        bits = ["required" if p.required else "optional"]
+        if p.default is not None:
+            bits.append(f"default={p.default}")
+        if p.options:
+            bits.append("one of: " + ", ".join(p.options))
+        lines.append(f"  {p.name} ({'; '.join(bits)})")
+    if cmd.composite:
+        lines.append("  note: composite -- expands to several PyMOL calls")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def list_commands(ctx: Context, filter: str = "") -> str:
+    """
+    Lists the PyMOL commands `parse_and_execute` accepts.
+
+    Without `filter`, returns every command name with a one-line description.
+    With `filter` (a substring matched against names and descriptions), returns
+    full detail for the matches: the exact regex the input must satisfy, plus
+    each parameter's name, whether it is required, its default, and its allowed
+    values. Use it to confirm syntax before calling `parse_and_execute`.
+
+    Examples: filter="color" for the colouring commands, filter="cartoon" for
+    cartoon-related ones, filter="fetch" for the exact fetch signature.
+    """
+    if not filter.strip():
+        listing = "\n".join(
+            f"  {name} -- {cmd.description}"
+            for name, cmd in sorted(PYMOL_COMMANDS.items())
+        )
+        return (
+            f"{len(PYMOL_COMMANDS)} commands. Input must be literal PyMOL "
+            "syntax, one command per call.\n"
+            "Call list_commands with a filter for exact syntax and parameters."
+            f"\n\n{listing}"
+        )
+
+    needle = filter.strip().lower()
+    matches = {
+        name: cmd for name, cmd in sorted(PYMOL_COMMANDS.items())
+        if needle in name.lower() or needle in cmd.description.lower()
+    }
+    if not matches:
+        return (
+            f"No command matches '{filter}'. Call list_commands with no filter "
+            "to see all available commands."
+        )
+    return "\n\n".join(_describe_command(n, c) for n, c in matches.items())
 
 ##############################################################################
 # ENTRY POINT
