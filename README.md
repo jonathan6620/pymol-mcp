@@ -206,6 +206,21 @@ threading.Thread(target=_auto_start_mcp_socket, daemon=True).start()
 Opening the plugin dialog later still works — it shows the already-running
 listener, and "Stop Listening" stops it.
 
+#### Don't launch PyMOL from the terminal running your MCP client
+
+PyMOL writes to the terminal it was started from. If that is the same terminal
+a terminal-UI client such as Claude Code is drawing in, PyMOL's output
+interleaves with the client's screen drawing and garbles the display. Start
+PyMOL from its desktop launcher, from a separate terminal, or detached:
+
+```bash
+pymol structure.cif >/dev/null 2>&1 &
+```
+
+This plugin keeps quiet by default for the same reason; set `PYMOL_MCP_VERBOSE=1`
+in PyMOL's environment to get per-command tracing back. PyMOL's own messages are
+not affected by that flag, so the separate-terminal rule still applies.
+
 #### Verifying the socket is active
 
 You can confirm the listener is running from a terminal:
@@ -246,6 +261,9 @@ Here are some examples of what you can ask Claude to do:
 - **Command errors**: Check the PyMOL output window for any error messages
 - **Plugin not appearing**: Restart PyMOL and check that the plugin was correctly installed
 - **Claude not connecting**: Verify the paths in your Claude configuration file are correct
+- **Garbled client display**: PyMOL was almost certainly launched from the same
+  terminal as your MCP client — see
+  [Don't launch PyMOL from the terminal running your MCP client](#dont-launch-pymol-from-the-terminal-running-your-mcp-client)
 - **Server diagnostics**: The server logs nothing by default, because MCP clients
   treat a stdio server's stderr as an error stream and display every line. Set
   `PYMOL_MCP_LOG_LEVEL=INFO` (or `DEBUG`) in the server's `env` block to turn

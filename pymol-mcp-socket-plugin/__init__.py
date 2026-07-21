@@ -24,6 +24,19 @@ listening = False
 current_port = 9876  # Default port
 _dispatcher = None  # Built lazily on first command
 
+# PyMOL is commonly launched from the same terminal as the MCP client. Anything
+# printed from this plugin's socket thread goes to that terminal and interleaves
+# with the client's own screen drawing, corrupting its display. Command errors
+# reach the client as tool results regardless, so stay quiet unless
+# PYMOL_MCP_VERBOSE is set in the environment PyMOL was started with.
+VERBOSE = bool(os.environ.get("PYMOL_MCP_VERBOSE", "").strip())
+
+
+def _log(message):
+    """Print only when PYMOL_MCP_VERBOSE is set -- see the note above."""
+    if VERBOSE:
+        print(message)
+
 
 def __init_plugin__(app=None):
     '''
@@ -45,7 +58,7 @@ def execute_structured_command(command_name, args):
     global _dispatcher
 
     try:
-        print(f"Executing PyMOL command: {command_name} args={args}")
+        _log(f"Executing PyMOL command: {command_name} args={args}")
 
         if _dispatcher is None:
             from pymol import cmd
@@ -54,7 +67,7 @@ def execute_structured_command(command_name, args):
         handler = _dispatcher.get(command_name)
         if handler is None:
             error_msg = f"Unknown command: {command_name}"
-            print(error_msg)
+            _log(error_msg)
             return {"executed": False, "error": error_msg}
 
         import io
@@ -67,7 +80,7 @@ def execute_structured_command(command_name, args):
         output = output_buffer.getvalue()
 
         if output:
-            print(f"Command output: {output}")
+            _log(f"Command output: {output}")
             return {"executed": True, "output": output}
         elif result is not None:
             return {"executed": True, "output": str(result)}
@@ -75,8 +88,9 @@ def execute_structured_command(command_name, args):
             return {"executed": True, "output": "Command executed successfully (no output)"}
     except Exception as e:
         error_msg = f"Error executing PyMOL command '{command_name}': {str(e)}"
-        print(error_msg)
-        traceback.print_exc()
+        _log(error_msg)
+        if VERBOSE:
+            traceback.print_exc()
         return {"executed": False, "error": error_msg}
 
 
@@ -600,12 +614,12 @@ class SocketServer:
             self.socket.listen(1)
             self.socket.settimeout(1.0)
 
-            print(f"PyMOL MCP Socket server listening on {self.host}:{self.port}")
+            _log(f"PyMOL MCP Socket server listening on {self.host}:{self.port}")
 
             while self.running:
                 try:
                     self.client, address = self.socket.accept()
-                    print(f"Connected to client: {address}")
+                    _log(f"Connected to client: {address}")
                     self.client.settimeout(1.0)
 
                     buffer = b''
@@ -640,7 +654,7 @@ class SocketServer:
                         except socket.timeout:
                             continue
                         except Exception as e:
-                            print(f"Error receiving data: {str(e)}")
+                            _log(f"Error receiving data: {str(e)}")
                             break
 
                     if self.client:
@@ -649,16 +663,17 @@ class SocketServer:
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    print(f"Error accepting connection: {str(e)}")
+                    _log(f"Error accepting connection: {str(e)}")
 
         except Exception as e:
-            print(f"Socket server error: {str(e)}")
-            traceback.print_exc()
+            _log(f"Socket server error: {str(e)}")
+            if VERBOSE:
+                traceback.print_exc()
         finally:
             if self.socket:
                 self.socket.close()
             self.running = False
-            print("Socket server stopped")
+            _log("Socket server stopped")
 
     def _handle_command(self, command):
         """Handle received structured command"""
