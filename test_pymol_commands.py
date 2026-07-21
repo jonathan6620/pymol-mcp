@@ -13,6 +13,7 @@ Tests:
 
 import re
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
@@ -22,7 +23,10 @@ sys.modules["mcp"] = MagicMock()
 sys.modules["mcp.server"] = MagicMock()
 sys.modules["mcp.server.fastmcp"] = MagicMock()
 
-sys.path.insert(0, "/home/jward/pymol-mcp")
+REPO_ROOT = Path(__file__).resolve().parent
+PLUGIN_PATH = REPO_ROOT / "pymol-mcp-socket-plugin" / "__init__.py"
+
+sys.path.insert(0, str(REPO_ROOT))
 
 from models import (
     ParameterDef,
@@ -766,7 +770,7 @@ class TestServerPluginSync:
     @pytest.fixture
     def plugin_dispatcher_commands(self):
         """Parse the plugin __init__.py to extract dispatcher keys."""
-        plugin_path = "/home/jward/pymol-mcp/pymol-mcp-socket-plugin/__init__.py"
+        plugin_path = PLUGIN_PATH
         with open(plugin_path) as f:
             source = f.read()
 
@@ -1069,7 +1073,7 @@ class TestServerModuleIntegrity:
                 "print('imports_ok')"
             ],
             capture_output=True, text=True,
-            cwd="/home/jward/pymol-mcp",
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, (
             f"Server module failed to import:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -1089,7 +1093,7 @@ class TestServerModuleIntegrity:
                 "print(f'name={mcp.name}')"
             ],
             capture_output=True, text=True,
-            cwd="/home/jward/pymol-mcp",
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, (
             f"FastMCP instantiation failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -1112,7 +1116,7 @@ class TestServerModuleIntegrity:
                 "print('description' not in sig.parameters)"
             ],
             capture_output=True, text=True,
-            cwd="/home/jward/pymol-mcp",
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, f"Failed: {result.stderr}"
         assert "True" in result.stdout, (
@@ -1135,7 +1139,7 @@ class TestServerModuleIntegrity:
                 "print('instructions' in sig.parameters)"
             ],
             capture_output=True, text=True,
-            cwd="/home/jward/pymol-mcp",
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, f"Failed: {result.stderr}"
         assert "True" in result.stdout, (
@@ -1154,7 +1158,7 @@ class TestServerModuleIntegrity:
                 "print(f'tools={tools}')"
             ],
             capture_output=True, text=True,
-            cwd="/home/jward/pymol-mcp",
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, (
             f"Failed to list tools:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -1183,7 +1187,7 @@ class TestSocketConnectionDefaults:
                 "print(f'host={conn.host} port={conn.port}')"
             ],
             capture_output=True, text=True,
-            cwd="/home/jward/pymol-mcp",
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, f"Import failed: {result.stderr}"
         assert "port=9876" in result.stdout
@@ -1191,7 +1195,7 @@ class TestSocketConnectionDefaults:
 
     def test_plugin_default_port_matches_server(self):
         """The plugin's default port should match the server's default."""
-        plugin_path = "/home/jward/pymol-mcp/pymol-mcp-socket-plugin/__init__.py"
+        plugin_path = PLUGIN_PATH
         with open(plugin_path) as f:
             source = f.read()
         assert "current_port = 9876" in source, (
