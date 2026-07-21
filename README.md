@@ -166,18 +166,22 @@ Before Claude can send commands to PyMOL, the socket listener must be active. Th
 Create or edit `~/.pymolrc.py` so the listener starts every time PyMOL opens:
 
 ```python
-import glob, importlib.util, threading, time
+import glob, importlib.util, os, threading, time
 
 # Where PyMOL installed the plugin. Adjust to match your installation:
-#   Linux (conda): ~/miniconda/envs/<env>/lib/python3.*/site-packages/pmg_tk/startup/
+#   Linux (conda): ~/miniconda/envs/*/lib/python3.*/site-packages/pmg_tk/startup/
 #   Linux (pip):   ~/.local/lib/python3.*/site-packages/pmg_tk/startup/
 #   macOS (app):   /Applications/PyMOL.app/.../pmg_tk/startup/
-PLUGIN_GLOB = "*/lib/python3.*/site-packages/pmg_tk/startup/pymol-mcp-socket-plugin/__init__.py"
+#
+# Must be absolute (or start with ~). PyMOL's working directory is wherever it
+# was launched from, so a relative glob silently matches nothing. Note that a
+# single * spans one path segment only -- it will not cross `envs/<name>/`.
+PLUGIN_GLOB = "~/miniconda/envs/*/lib/python3.*/site-packages/pmg_tk/startup/pymol-mcp-socket-plugin/__init__.py"
 
 def _auto_start_mcp_socket():
     time.sleep(3)  # let the plugin system finish initializing
     try:
-        paths = glob.glob(PLUGIN_GLOB)
+        paths = glob.glob(os.path.expanduser(PLUGIN_GLOB))
         if not paths:
             print("MCP socket plugin not found")
             return
