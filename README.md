@@ -2,6 +2,10 @@
 
 PyMOL-MCP connects PyMOL to Claude AI through the Model Context Protocol (MCP), enabling Claude to directly interact with and control PyMOL. This powerful integration allows for conversational structural biology, molecular visualization, and analysis through natural language.
 
+> Originally created by [Vishnu Rajan Tejus](https://github.com/vrtejus) as
+> [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp). This is a continuation
+> of that work — see [Credits](#credits).
+
 
 
 https://github.com/user-attachments/assets/687f43dc-d45e-477e-ac2b-7438e175cb36
@@ -14,7 +18,7 @@ https://github.com/user-attachments/assets/687f43dc-d45e-477e-ac2b-7438e175cb36
 - **Intelligent command parsing**: Natural language processing for PyMOL commands
 - **Molecular visualization control**: Manipulate representations, colors, and views
 - **Structural analysis**: Perform measurements, alignments, and other analyses
-- **Code execution**: Run arbitrary Python code in PyMOL from Claude
+- **No arbitrary code execution**: Only allowlisted `cmd.*` calls are dispatched — no `exec()` or `eval()`
 
 ## Installation Guide
 
@@ -22,12 +26,19 @@ https://github.com/user-attachments/assets/687f43dc-d45e-477e-ac2b-7438e175cb36
 
 - PyMOL installed on your system
 - Claude for Desktop
-- Python 3.10 or newer
 - Git
 
-### Step 1: Install the UV Package Manager
+(uv manages the Python toolchain itself, so you don't need a system Python 3.10+.)
 
-**On macOS:**
+### Step 1: Install the uv Package Manager
+
+**On macOS/Linux:**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Or, on macOS with Homebrew:
 
 ```bash
 brew install uv
@@ -40,44 +51,22 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 set Path=C:\Users\[YourUsername]\.local\bin;%Path%
 ```
 
-For other platforms, visit the [UV installation guide](https://docs.astral.sh/uv/getting-started/installation/).
+For other platforms, visit the [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
 
 ### Step 2: Clone the Repository
 
 ```bash
-git clone https://github.com/vrtejus/pymol-mcp
+git clone https://github.com/jonathan6620/pymol-mcp
 cd pymol-mcp
+uv sync
 ```
 
-### Step 3: Set Up the Environment
+`uv sync` creates `.venv` and installs everything pinned in `uv.lock` —
+including a suitable Python if you don't have one. There's no separate
+dependency-install step, and no virtualenv to activate: `uv run` always uses
+`.venv`.
 
-Create and activate a Python virtual environment:
-
-```bash
-python -m venv venv
-```
-
-**On macOS/Linux:**
-
-```bash
-source venv/bin/activate
-```
-
-**On Windows:**
-
-```bash
-venv\Scripts\activate
-```
-
-### Step 4: Install Dependencies
-
-With the virtual environment activated:
-
-```bash
-pip install mcp
-```
-
-### Step 5: Configure Claude
+### Step 3: Configure Claude
 
 #### Option A: Claude Desktop
 
@@ -90,8 +79,13 @@ pip install mcp
 {
   "mcpServers": {
     "pymol": {
-      "command": "[Full path to your venv python]",
-      "args": ["[Full path to pymol_mcp_server.py]"]
+      "command": "[Full path to uv]",
+      "args": [
+        "--directory",
+        "[Full path to the cloned pymol-mcp repo]",
+        "run",
+        "pymol_mcp_server.py"
+      ]
     }
   }
 }
@@ -103,27 +97,35 @@ For example:
 {
   "mcpServers": {
     "pymol": {
-      "command": "/Users/username/pymol-mcp/venv/bin/python",
-      "args": ["/Users/username/pymol-mcp/pymol_mcp_server.py"]
+      "command": "/Users/username/.local/bin/uv",
+      "args": [
+        "--directory",
+        "/Users/username/pymol-mcp",
+        "run",
+        "pymol_mcp_server.py"
+      ]
     }
   }
 }
 ```
 
-> **Note:** Use the actual full paths on your system. On Windows, use forward slashes (/) instead of backslashes.
+> **Note:** Use the actual full paths on your system — run `which uv` (macOS/Linux)
+> or `where uv` (Windows) to find the uv binary, since Claude Desktop does not
+> inherit your shell's `PATH`. On Windows, use forward slashes (/) instead of
+> backslashes.
 
 #### Option B: Claude Code (CLI)
 
 Add the PyMOL MCP server using the `claude` CLI:
 
 ```bash
-claude mcp add pymol -s user -- /path/to/pymol-mcp/venv/bin/python /path/to/pymol-mcp/pymol_mcp_server.py
+claude mcp add pymol -s user -- uv --directory /path/to/pymol-mcp run pymol_mcp_server.py
 ```
 
 For example:
 
 ```bash
-claude mcp add pymol -s user -- /home/username/pymol-mcp/venv/bin/python /home/username/pymol-mcp/pymol_mcp_server.py
+claude mcp add pymol -s user -- uv --directory /home/username/pymol-mcp run pymol_mcp_server.py
 ```
 
 This saves the configuration to `~/.claude.json`. You can verify it was added with:
@@ -134,7 +136,7 @@ claude mcp list
 
 > **Note:** After adding the MCP server, you must restart your Claude Code session for the tools to become available.
 
-### Step 6: Install the PyMOL Socket Plugin
+### Step 4: Install the PyMOL Socket Plugin
 
 The MCP server communicates with PyMOL through a socket connection on port 9876. You need to install the socket listener plugin in PyMOL:
 
@@ -146,7 +148,7 @@ The MCP server communicates with PyMOL through a socket connection on port 9876.
 6. Click **"Open"** and follow the prompts to install the plugin
 7. Restart PyMOL after installation
 
-### Step 7: Start the PyMOL Socket Listener
+### Step 5: Start the PyMOL Socket Listener
 
 Before Claude can send commands to PyMOL, the socket listener must be active. There are two options:
 
@@ -161,77 +163,38 @@ Before Claude can send commands to PyMOL, the socket listener must be active. Th
 
 #### Option B: Auto-start on PyMOL launch (via `.pymolrc.py`)
 
-Create or edit `~/.pymolrc.py` to auto-start the socket listener whenever PyMOL opens. You need to adjust `plugin_paths` to match where PyMOL installed the plugin on your system:
+Create or edit `~/.pymolrc.py` so the listener starts every time PyMOL opens:
 
 ```python
-import threading
-import time
+import glob, importlib.util, threading, time
+
+# Where PyMOL installed the plugin. Adjust to match your installation:
+#   Linux (conda): ~/miniconda/envs/<env>/lib/python3.*/site-packages/pmg_tk/startup/
+#   Linux (pip):   ~/.local/lib/python3.*/site-packages/pmg_tk/startup/
+#   macOS (app):   /Applications/PyMOL.app/.../pmg_tk/startup/
+PLUGIN_GLOB = "*/lib/python3.*/site-packages/pmg_tk/startup/pymol-mcp-socket-plugin/__init__.py"
 
 def _auto_start_mcp_socket():
-    """Wait for PyMOL to finish loading, then start the MCP socket plugin."""
-    time.sleep(3)  # wait for plugin system to initialize
+    time.sleep(3)  # let the plugin system finish initializing
     try:
-        import importlib.util
-        import glob
-
-        # Find the installed plugin.
-        # Adjust this glob to match your PyMOL installation path:
-        #   Linux (conda): ~/miniconda/envs/<env>/lib/python3.*/site-packages/pmg_tk/startup/
-        #   macOS (app):   /Applications/PyMOL.app/.../pmg_tk/startup/
-        #   Linux (pip):   ~/.local/lib/python3.*/site-packages/pmg_tk/startup/
-        plugin_paths = glob.glob(
-            "*/lib/python3.*/site-packages/"
-            "pmg_tk/startup/pymol-mcp-socket-plugin/__init__.py"
-        )
-        if not plugin_paths:
+        paths = glob.glob(PLUGIN_GLOB)
+        if not paths:
             print("MCP socket plugin not found")
             return
-
-        spec = importlib.util.spec_from_file_location(
-            "pymol_mcp_socket_plugin", plugin_paths[0]
-        )
+        spec = importlib.util.spec_from_file_location("pymol_mcp_socket_plugin", paths[0])
         plugin = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(plugin)
-
-        from pymol import cmd
-
-        if not plugin.listening:
-            dispatcher = plugin.build_command_dispatcher(cmd)
-
-            def execute_structured_command(command_name, args):
-                import io, traceback
-                from contextlib import redirect_stdout
-                try:
-                    handler = dispatcher.get(command_name)
-                    if handler is None:
-                        return {"executed": False, "error": f"Unknown command: {command_name}"}
-                    output_buffer = io.StringIO()
-                    with redirect_stdout(output_buffer):
-                        result = handler(args)
-                    output = output_buffer.getvalue()
-                    if output:
-                        return {"executed": True, "output": output}
-                    elif result is not None:
-                        return {"executed": True, "output": str(result)}
-                    else:
-                        return {"executed": True, "output": "Command executed successfully (no output)"}
-                except Exception as e:
-                    traceback.print_exc()
-                    return {"executed": False, "error": str(e)}
-
-            server = plugin.SocketServer(port=9876)
-            if server.start(execute_structured_command):
-                plugin.socket_server = server
-                plugin.listening = True
-                print("MCP socket plugin auto-started on port 9876")
+        if plugin.start_socket_server(9876):
+            print("MCP socket plugin auto-started on port 9876")
     except Exception as e:
         print(f"MCP socket auto-start failed: {e}")
 
-# Start in background thread so it doesn't block PyMOL startup
+# Background thread so PyMOL startup isn't blocked
 threading.Thread(target=_auto_start_mcp_socket, daemon=True).start()
 ```
 
-With this in place, the socket listener starts automatically every time you launch PyMOL.
+Opening the plugin dialog later still works — it shows the already-running
+listener, and "Stop Listening" stops it.
 
 #### Verifying the socket is active
 
@@ -249,20 +212,12 @@ lsof -i :9876
 
 ### Starting the Connection
 
-1. In PyMOL:
+With the socket listener running (Step 5):
 
-   - Go to Plugin > PyMOL MCP Socket Plugin
-   - Click "Start Listening"
-   - The status should change to "Listening on port 9876"
-
-2. In Claude Desktop:
-   - You should see a hammer icon in the tools section when chatting
-   - Click it to access the PyMOL tools
-
-3. In Claude Code (CLI):
-   - Start a new session after configuring the MCP server
-   - The `parse_and_execute` tool will be available automatically
-   - Ask Claude to load structures, change representations, etc.
+- **Claude Desktop:** a hammer icon appears in the tools section when chatting —
+  click it to access the PyMOL tools.
+- **Claude Code (CLI):** start a new session; the `parse_and_execute` tool is
+  available automatically.
 
 ### Example Commands
 
@@ -287,12 +242,37 @@ Here are some examples of what you can ask Claude to do:
 - The socket connection requires both PyMOL and Claude to be running on the same machine
 - Some complex operations may need to be broken down into simpler steps
 - Always save your work before using experimental features
-- Join our Bio-MCP Community to troubleshoot, provide feedback & improve Bio-MCPS! https://join.slack.com/t/bio-mcpslack/shared_invite/zt-31z4pho39-K5tb6sZ1hUvrFyoPmKihAA
+- The upstream project runs a Bio-MCP Slack community for troubleshooting and feedback on Bio-MCPs: https://join.slack.com/t/bio-mcpslack/shared_invite/zt-31z4pho39-K5tb6sZ1hUvrFyoPmKihAA
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+Run the test suite and linters with uv:
+
+```bash
+uv run pytest
+uv run ruff check .
+```
+
+## Credits
+
+PyMOL-MCP was created by **[Vishnu Rajan Tejus](https://github.com/vrtejus)** at
+[vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp), with a documentation
+contribution from [Dimple Amitha Garuadapuri](https://github.com/AmithaGaruadapuri).
+The socket plugin, the MCP server, and the original PyMOL command bridge are all
+their work.
+
+This repository continues that project independently rather than as a GitHub
+fork, so it can diverge freely. The full upstream commit history is preserved
+here — `git log` shows the original authorship. Changes since the fork point:
+
+- Replaced `exec()` with an allowlisted command dispatcher
+- Added Pydantic models, type hints, and a test suite
+- Reworked setup around uv and added Claude Code CLI instructions
+
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT — see the [LICENSE](LICENSE) file. Copyright is held jointly by the original
+author and subsequent contributors; the original copyright notice is retained as
+the license requires.

@@ -22,6 +22,7 @@ socket_server = None
 received_commands = []
 listening = False
 current_port = 9876  # Default port
+_dispatcher = None  # Built lazily on first command
 
 
 def __init_plugin__(app=None):
@@ -30,6 +31,81 @@ def __init_plugin__(app=None):
     '''
     from pymol.plugins import addmenuitemqt
     addmenuitemqt('PyMol MCP Socket Plugin', run_plugin_gui)
+
+
+##############################################################################
+# SERVER CONTROL
+##############################################################################
+
+def execute_structured_command(command_name, args):
+    """
+    Execute an allowlisted PyMOL command via the dispatcher.
+    No exec() or eval() — only direct cmd.* function calls.
+    """
+    global _dispatcher
+
+    try:
+        print(f"Executing PyMOL command: {command_name} args={args}")
+
+        if _dispatcher is None:
+            from pymol import cmd
+            _dispatcher = build_command_dispatcher(cmd)
+
+        handler = _dispatcher.get(command_name)
+        if handler is None:
+            error_msg = f"Unknown command: {command_name}"
+            print(error_msg)
+            return {"executed": False, "error": error_msg}
+
+        import io
+        from contextlib import redirect_stdout
+
+        output_buffer = io.StringIO()
+        with redirect_stdout(output_buffer):
+            result = handler(args)
+
+        output = output_buffer.getvalue()
+
+        if output:
+            print(f"Command output: {output}")
+            return {"executed": True, "output": output}
+        elif result is not None:
+            return {"executed": True, "output": str(result)}
+        else:
+            return {"executed": True, "output": "Command executed successfully (no output)"}
+    except Exception as e:
+        error_msg = f"Error executing PyMOL command '{command_name}': {str(e)}"
+        print(error_msg)
+        traceback.print_exc()
+        return {"executed": False, "error": error_msg}
+
+
+def start_socket_server(port=None):
+    """
+    Start the MCP socket listener. Returns True if it was started by this call,
+    False if it was already running. Safe to call from `.pymolrc.py`.
+    """
+    global socket_server, listening, current_port
+
+    if listening:
+        return False
+
+    current_port = port or current_port
+    socket_server = SocketServer(port=current_port)
+    if not socket_server.start(execute_structured_command):
+        return False
+
+    listening = True
+    return True
+
+
+def stop_socket_server():
+    """Stop the MCP socket listener if it is running."""
+    global listening
+
+    if socket_server and listening:
+        socket_server.stop()
+    listening = False
 
 
 ##############################################################################
@@ -632,8 +708,6 @@ def run_plugin_gui():
     dialog.show()
 
 def make_dialog():
-    from pymol import cmd
-
     from pymol.Qt import QtWidgets
     from pymol.Qt.utils import loadUi
 
@@ -642,74 +716,27 @@ def make_dialog():
     uifile = os.path.join(os.path.dirname(__file__), 'pymol_mcp_plugin.ui')
     form = loadUi(uifile, dialog)
 
+    # Reflect the current state — the server may already have been started
+    # from `.pymolrc.py` before the dialog was ever opened.
     form.input_port.setValue(current_port)
-    update_status_label(form, "Not listening")
-
-    # Build the command dispatcher once
-    dispatcher = build_command_dispatcher(cmd)
-
-    def execute_structured_command(command_name, args):
-        """
-        Execute an allowlisted PyMOL command via the dispatcher.
-        No exec() or eval() — only direct cmd.* function calls.
-        """
-        try:
-            print(f"Executing PyMOL command: {command_name} args={args}")
-
-            handler = dispatcher.get(command_name)
-            if handler is None:
-                error_msg = f"Unknown command: {command_name}"
-                print(error_msg)
-                return {"executed": False, "error": error_msg}
-
-            import io
-            from contextlib import redirect_stdout
-
-            output_buffer = io.StringIO()
-            with redirect_stdout(output_buffer):
-                result = handler(args)
-
-            output = output_buffer.getvalue()
-
-            if output:
-                print(f"Command output: {output}")
-                return {"executed": True, "output": output}
-            elif result is not None:
-                return {"executed": True, "output": str(result)}
-            else:
-                return {"executed": True, "output": "Command executed successfully (no output)"}
-        except Exception as e:
-            error_msg = f"Error executing PyMOL command '{command_name}': {str(e)}"
-            print(error_msg)
-            traceback.print_exc()
-            return {"executed": False, "error": error_msg}
+    if listening:
+        form.button_toggle_listening.setText("Stop Listening")
+        update_status_label(form, f"Listening on port {current_port}")
+    else:
+        update_status_label(form, "Not listening")
 
     def toggle_listening():
-        global socket_server, listening, current_port
-
         if not listening:
-            port = form.input_port.value()
-            current_port = port
-
-            socket_server = SocketServer(port=port)
-            if socket_server.start(execute_structured_command):
-                listening = True
+            if start_socket_server(form.input_port.value()):
                 form.button_toggle_listening.setText("Stop Listening")
-                update_status_label(form, f"Listening on port {port}")
+                update_status_label(form, f"Listening on port {current_port}")
         else:
-            if socket_server:
-                socket_server.stop()
-            listening = False
+            stop_socket_server()
             form.button_toggle_listening.setText("Start Listening")
             update_status_label(form, "Not listening")
 
     def close_dialog():
-        global socket_server, listening
-
-        if socket_server and listening:
-            socket_server.stop()
-            listening = False
-
+        stop_socket_server()
         dialog.close()
 
     form.button_toggle_listening.clicked.connect(toggle_listening)
