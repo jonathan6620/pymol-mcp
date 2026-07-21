@@ -803,8 +803,19 @@ for _label, _patterns in ERROR_PATTERNS.items():
 # LOGGING
 ##############################################################################
 
-logging.basicConfig(level=logging.INFO)
+# On stdio transport, stdout is the JSON-RPC channel and anything on stderr is
+# reported by the client as a server error -- Claude Code surfaces every line,
+# so routine INFO chatter shows up as errors in its UI. Stay silent by default;
+# set PYMOL_MCP_LOG_LEVEL (e.g. DEBUG, INFO) to get diagnostics on stderr.
 logger = logging.getLogger("PyMOLMCPServer")
+
+_log_level = os.environ.get("PYMOL_MCP_LOG_LEVEL", "").strip().upper()
+if _log_level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+    logging.basicConfig(level=_log_level)
+else:
+    # A handler on the root logger keeps logging.lastResort from writing this
+    # server's records -- or any library's -- to stderr.
+    logging.getLogger().addHandler(logging.NullHandler())
 
 ##############################################################################
 # PYMOL SOCKET CONNECTION

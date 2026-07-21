@@ -84,6 +84,7 @@ dependency-install step, and no virtualenv to activate: `uv run` always uses
         "--directory",
         "[Full path to the cloned pymol-mcp repo]",
         "run",
+        "--quiet",
         "pymol_mcp_server.py"
       ]
     }
@@ -102,6 +103,7 @@ For example:
         "--directory",
         "/Users/username/pymol-mcp",
         "run",
+        "--quiet",
         "pymol_mcp_server.py"
       ]
     }
@@ -114,18 +116,22 @@ For example:
 > inherit your shell's `PATH`. On Windows, use forward slashes (/) instead of
 > backslashes.
 
+> **Note:** `--quiet` keeps uv's own progress and lockfile messages off stderr.
+> MCP clients report anything a stdio server writes to stderr as a server error,
+> so without it uv's chatter shows up as errors in the client UI.
+
 #### Option B: Claude Code (CLI)
 
 Add the PyMOL MCP server using the `claude` CLI:
 
 ```bash
-claude mcp add pymol -s user -- uv --directory /path/to/pymol-mcp run pymol_mcp_server.py
+claude mcp add pymol -s user -- uv --directory /path/to/pymol-mcp run --quiet pymol_mcp_server.py
 ```
 
 For example:
 
 ```bash
-claude mcp add pymol -s user -- uv --directory /home/username/pymol-mcp run pymol_mcp_server.py
+claude mcp add pymol -s user -- uv --directory /home/username/pymol-mcp run --quiet pymol_mcp_server.py
 ```
 
 This saves the configuration to `~/.claude.json`. You can verify it was added with:
@@ -240,6 +246,10 @@ Here are some examples of what you can ask Claude to do:
 - **Command errors**: Check the PyMOL output window for any error messages
 - **Plugin not appearing**: Restart PyMOL and check that the plugin was correctly installed
 - **Claude not connecting**: Verify the paths in your Claude configuration file are correct
+- **Server diagnostics**: The server logs nothing by default, because MCP clients
+  treat a stdio server's stderr as an error stream and display every line. Set
+  `PYMOL_MCP_LOG_LEVEL=INFO` (or `DEBUG`) in the server's `env` block to turn
+  logging back on; unset it once you're done.
 
 ## Limitations & Notes
 
