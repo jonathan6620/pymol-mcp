@@ -42,3 +42,6 @@ htmlcov/
 
 # mypy
 .mypy_cache/
+
+# macOS
+.DS_Store
