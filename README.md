@@ -4,12 +4,7 @@ PyMOL-MCP connects PyMOL to Claude AI through the Model Context Protocol (MCP), 
 
 > Originally created by [Vishnu Rajan Tejus](https://github.com/vrtejus) as
 > [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp). This is a continuation
-> of that work — see [Credits](#credits).
-
-
-
-https://github.com/user-attachments/assets/687f43dc-d45e-477e-ac2b-7438e175cb36
-
+> of that work. See [Credits](#credits).
 
 
 ## Features
@@ -18,12 +13,18 @@ https://github.com/user-attachments/assets/687f43dc-d45e-477e-ac2b-7438e175cb36
 - **Intelligent command parsing**: Natural language processing for PyMOL commands
 - **Molecular visualization control**: Manipulate representations, colors, and views
 - **Structural analysis**: Perform measurements, alignments, and other analyses
-- **No arbitrary code execution**: Only allowlisted `cmd.*` calls are dispatched — no `exec()` or `eval()`
+- **No arbitrary code execution**: Only allowlisted `cmd.*` calls are dispatched, with no `exec()` or `eval()`
 
-## Quick Start with Make
+## Prerequisites
 
-For Claude Code, with [uv](#step-1-install-the-uv-package-manager) and PyMOL
-already installed:
+- PyMOL installed on your system
+- Claude Desktop or Claude Code 
+- Git
+- Make, if you want to use the [Quick Start](#quick-start) 
+
+## Quick Start
+
+For Claude Code, with [uv](#step-1-install-the-uv-package-manager), *PyMOL* and *Make* installed:
 
 ```bash
 git clone https://github.com/jonathan6620/pymol-mcp
@@ -33,51 +34,16 @@ claude mcp add pymol -s user -- uv --directory $(pwd) run --quiet pymol_mcp_serv
 make install
 ```
 
-Then restart PyMOL and start a new Claude Code session. PyMOL prints
-`MCP socket plugin auto-started on port 9876` on startup once it is working.
+Restart PyMOL and start a new Claude Code session. On startup PyMOL prints
+`MCP socket plugin auto-started on port 9876`.
 
-`make install` covers [Step 4](#step-4-install-the-pymol-socket-plugin) and
-[Step 5](#step-5-start-the-pymol-socket-listener): it symlinks the socket plugin
-into PyMOL's plugin directory and adds the auto-start block to `~/.pymolrc.py`.
-Both halves are idempotent, so rerunning is safe — and rerun after a `git pull`
-if symlinks weren't available on your system.
+If `make` cannot find the PyMOL executable, then pass the path:
+`make install PYMOL=/full/path/to/pymol`.
 
-| Target | What it does |
-| --- | --- |
-| `make install` | Both steps below |
-| `make install-plugin` | Symlink the socket plugin into PyMOL's plugin directory |
-| `make install-pymolrc` | Add the auto-start block to `~/.pymolrc.py` |
-| `make test` | Run the test suite |
-| `make lint` | Run ruff |
-| `make help` | List targets, and show which PyMOL was detected |
+For Claude Desktop, use [Step 3, Option A](#option-a-claude-desktop) in place of
+the `claude mcp add` line, then run `make install`.
 
-Two things it may ask of you:
-
-- **`error: could not find a pymol executable`** — pass the path:
-  `make install PYMOL=/full/path/to/pymol`. A shell *alias* for `pymol` will not
-  do, because `make` runs recipes with `/bin/sh`, which does not read aliases; in
-  zsh, `which pymol` prints the path an alias points at.
-- **`already contains an auto-start snippet that this script does not manage`** —
-  you have an older hand-pasted snippet in `~/.pymolrc.py`. Delete it and rerun,
-  or use `make install FORCE=1` to replace the file (a timestamped backup is kept
-  either way).
-
-Using **Claude Desktop** instead? It's configured through a JSON file rather than
-the `claude` CLI — replace the `claude mcp add` line above with
-[Step 3, Option A](#option-a-claude-desktop), then run `make install` as shown.
-
-The rest of this guide explains each step in full, including manual alternatives
-to every `make` target.
-
-## Installation Guide
-
-### Prerequisites
-
-- PyMOL installed on your system
-- Claude for Desktop
-- Git
-
-(uv manages the Python toolchain itself, so you don't need a system Python 3.10+.)
+## Full Installation Guide
 
 ### Step 1: Install the uv Package Manager
 
@@ -110,12 +76,9 @@ cd pymol-mcp
 uv sync
 ```
 
-`uv sync` creates `.venv` and installs everything pinned in `uv.lock` —
-including a suitable Python if you don't have one. There's no separate
-dependency-install step, and no virtualenv to activate: `uv run` always uses
-`.venv`.
-
 ### Step 3: Configure Claude
+
+This can use either the Desktop App or Claude Code.
 
 #### Option A: Claude Desktop
 
@@ -160,14 +123,10 @@ For example:
 }
 ```
 
-> **Note:** Use the actual full paths on your system — run `which uv` (macOS/Linux)
+> **Note:** Ensure that you specify the full paths for your system. Run `which uv` on macOS/Linux
 > or `where uv` (Windows) to find the uv binary, since Claude Desktop does not
 > inherit your shell's `PATH`. On Windows, use forward slashes (/) instead of
 > backslashes.
-
-> **Note:** `--quiet` keeps uv's own progress and lockfile messages off stderr.
-> MCP clients report anything a stdio server writes to stderr as a server error,
-> so without it uv's chatter shows up as errors in the client UI.
 
 #### Option B: Claude Code (CLI)
 
@@ -194,53 +153,13 @@ claude mcp list
 
 ### Step 4: Install the PyMOL Socket Plugin
 
-The MCP server communicates with PyMOL through a socket connection on port 9876.
-Install the socket listener plugin from the repository you cloned in Step 2:
+The MCP server communicates with PyMOL through a socket connection on port 9876. Install the socket listener plugin from the repository you cloned in Step 2:
 
 ```bash
 pymol -cq install_plugin.py
 ```
 
-> **Shortcut:** `make install` does this step *and* Step 5's auto-start
-> configuration in one go. It finds PyMOL on `PATH` or in the usual conda /
-> `PyMOL.app` locations — `make help` prints which one it picked. If it comes up
-> empty, pass the path explicitly:
-> `make install PYMOL=~/miniconda3/envs/pymol-env/bin/pymol`.
->
-> A shell **alias** for `pymol` will not help here: `make` runs its recipes with
-> `/bin/sh`, which does not read shell aliases, so `pymol` can work when you type
-> it and still be invisible to `make`. In zsh, `which pymol` prints the path an
-> alias points at.
-
-Restart PyMOL afterwards. That's the whole step on every platform — the script
-runs inside PyMOL and asks PyMOL where its plugin directory is, so there is no
-path to look up or edit.
-
-It prints where the plugin landed, then imports it back the same way PyMOL does
-to confirm it actually loads:
-
-```
-Installed: /path/to/site-packages/pmg_tk/startup/pymol-mcp-socket-plugin
-  -> symlink to /path/to/pymol-mcp/pymol-mcp-socket-plugin
-Plugin verified. `git pull` now updates PyMOL's plugin automatically.
-```
-
-If `pymol` isn't on your `PATH`, use the full path to the binary (conda
-installs put it in `<env>/bin/pymol`; on Windows, `<env>\Scripts\pymol.exe`).
-
-> **Why not the Plugin Manager?** *Plugin > Plugin Manager > Install New Plugin*
-> works, but it installs a **copy**. That copy does not change when you
-> `git pull`, so the repo and the plugin PyMOL actually loads drift apart
-> silently — and the resulting failures point nowhere near the real cause (an
-> older copy predates `start_socket_server`, so auto-start reports the plugin as
-> *missing* even though it is installed). The script symlinks instead, so the
-> plugin PyMOL loads is always this checkout.
->
-> Where symlinks aren't available (Windows without Developer Mode) it falls back
-> to a copy and tells you so; rerun it after each `git pull` in that case.
-
-To upgrade an existing install — including one made through the Plugin Manager —
-just run the same command. It replaces whatever is there and is safe to rerun.
+Restart PyMOL afterwards, so it picks up the new plugin.
 
 ### Step 5: Start the PyMOL Socket Listener
 
@@ -257,20 +176,13 @@ Before Claude can send commands to PyMOL, the socket listener must be active. Th
 
 #### Option B: Auto-start on PyMOL launch (via `.pymolrc.py`)
 
-Run this to configure it for you:
+Run this to configure PyMOL to launch the plugin when the app opens.
 
 ```bash
 make install-pymolrc
 ```
 
-It writes the snippet below into `~/.pymolrc.py` between `# >>> pymol-mcp
-auto-start >>>` markers, so rerunning it updates that block and leaves the rest
-of your file alone. It backs the file up first, and refuses to append a second
-copy if you already pasted the snippet by hand — remove the old one, or pass
-`FORCE=1` to replace the file outright.
-
-To do it by hand instead, create or edit `~/.pymolrc.py` so the listener starts
-every time PyMOL opens:
+Alternatively, create or edit `~/.pymolrc.py`.
 
 ```python
 import importlib, threading, time
@@ -302,29 +214,6 @@ def _auto_start_mcp_socket():
 threading.Thread(target=_auto_start_mcp_socket, daemon=True).start()
 ```
 
-Opening the plugin dialog later still works — it shows the already-running
-listener, and "Stop Listening" stops it. This works because `import_module`
-returns the *same* module object PyMOL's own plugin manager loaded, so the
-dialog and the auto-start share one listener. (Loading the file by path
-instead — via `spec_from_file_location` — builds a second, independent copy of
-the module: the listener runs in one copy while the dialog reads the other's
-state and reports "Not listening".)
-
-#### Don't launch PyMOL from the terminal running your MCP client
-
-PyMOL writes to the terminal it was started from. If that is the same terminal
-a terminal-UI client such as Claude Code is drawing in, PyMOL's output
-interleaves with the client's screen drawing and garbles the display. Start
-PyMOL from its desktop launcher, from a separate terminal, or detached:
-
-```bash
-pymol structure.cif >/dev/null 2>&1 &
-```
-
-This plugin keeps quiet by default for the same reason; set `PYMOL_MCP_VERBOSE=1`
-in PyMOL's environment to get per-command tracing back. PyMOL's own messages are
-not affected by that flag, so the separate-terminal rule still applies.
-
 #### Verifying the socket is active
 
 You can confirm the listener is running from a terminal:
@@ -343,10 +232,9 @@ lsof -i :9876
 
 With the socket listener running (Step 5):
 
-- **Claude Desktop:** a hammer icon appears in the tools section when chatting —
+- **Claude Desktop:** a hammer icon appears in the tools section when chatting;
   click it to access the PyMOL tools.
-- **Claude Code (CLI):** start a new session; the `parse_and_execute` tool is
-  available automatically.
+- **Claude Code (CLI):** start a new session in the terminal.
 
 ### Example Commands
 
@@ -363,33 +251,32 @@ Here are some examples of what you can ask Claude to do:
 
 - **Connection issues**: Make sure the PyMOL plugin is listening before attempting to connect from Claude
 - **Command errors**: Check the PyMOL output window for any error messages
-- **`MCP socket plugin not installed`** on PyMOL startup: the plugin isn't in
-  PyMOL's startup directory. Run `pymol -cq install_plugin.py` (Step 4). If you
-  installed it through the Plugin Manager and it still fails, you likely have a
-  stale copy from an older checkout — the install script replaces it.
+- **`MCP socket plugin not installed`** on PyMOL startup: run
+  `pymol -cq install_plugin.py` (Step 4). If you installed through the Plugin
+  Manager, you probably have a stale copy; the script replaces it.
 - **`AttributeError: no attribute 'start_socket_server'`**: an outdated copy of
-  the plugin. This is the pre-symlink failure mode: the Plugin Manager's copy
-  predates that function, so PyMOL loads it and auto-start cannot find the entry
-  point. Rerun `pymol -cq install_plugin.py`.
-- **Dialog says "Not listening" while the port is clearly in use**: your
-  `~/.pymolrc.py` is loading the plugin by file path rather than importing
-  `pmg_tk.startup.pymol-mcp-socket-plugin`, so the dialog and the listener are
-  looking at two different copies of the module. Use the snippet in
+  the plugin. Rerun `pymol -cq install_plugin.py`.
+- **Dialog says "Not listening" while the port is in use**: your `~/.pymolrc.py`
+  loads the plugin by file path, giving the dialog and the listener separate
+  copies of the module. Use the snippet in
   [Step 5 Option B](#option-b-auto-start-on-pymol-launch-via-pymolrcpy).
-- **`~/.pymolrc.py` seems to be ignored**: PyMOL searches the *current working
-  directory* before `$HOME` and stops at the first directory containing any
-  `pymolrc*` or `.pymolrc*` file. Launching PyMOL from a directory that has one
-  therefore shadows your home config entirely. `pymol -cq -d "import pymol.invocation
-  as i; print(i.get_user_config())"` prints which files it will actually load.
+- **`~/.pymolrc.py` is ignored**: PyMOL searches the working directory before
+  `$HOME` and stops at the first directory holding a `pymolrc*` or `.pymolrc*`
+  file, so launching from such a directory shadows your home config. To print
+  the files PyMOL loads:
+
+  ```bash
+  pymol -cq -d "import pymol.invocation as i; print(i.get_user_config())"
+  ```
+
 - **Plugin not appearing**: Restart PyMOL and check that the plugin was correctly installed
 - **Claude not connecting**: Verify the paths in your Claude configuration file are correct
-- **Garbled client display**: PyMOL was almost certainly launched from the same
-  terminal as your MCP client — see
-  [Don't launch PyMOL from the terminal running your MCP client](#dont-launch-pymol-from-the-terminal-running-your-mcp-client)
+- **Garbled client display**: PyMOL writes to the terminal it was launched from,
+  which corrupts the display of a terminal client such as Claude Code. Launch
+  PyMOL from its desktop icon or a separate terminal.
 - **Server diagnostics**: The server logs nothing by default, because MCP clients
   treat a stdio server's stderr as an error stream and display every line. Set
-  `PYMOL_MCP_LOG_LEVEL=INFO` (or `DEBUG`) in the server's `env` block to turn
-  logging back on; unset it once you're done.
+  `PYMOL_MCP_LOG_LEVEL=INFO` (or `DEBUG`) in the server's `env` block to turn logging back on.
 
 ## Limitations & Notes
 
@@ -409,6 +296,12 @@ uv run pytest
 uv run ruff check .
 ```
 
+Or Make:
+
+```bash
+make test
+```
+
 ## Credits
 
 PyMOL-MCP was created by **[Vishnu Rajan Tejus](https://github.com/vrtejus)** at
@@ -419,7 +312,7 @@ their work.
 
 This repository continues that project independently rather than as a GitHub
 fork, so it can diverge freely. The full upstream commit history is preserved
-here — `git log` shows the original authorship. Changes since the fork point:
+here; `git log` shows the original authorship. Changes since the fork point:
 
 - Replaced `exec()` with an allowlisted command dispatcher
 - Added Pydantic models, type hints, and a test suite
@@ -427,6 +320,6 @@ here — `git log` shows the original authorship. Changes since the fork point:
 
 ## License
 
-MIT — see the [LICENSE](LICENSE) file. Copyright is held jointly by the original
+MIT. See the [LICENSE](LICENSE) file. Copyright is held jointly by the original
 author and subsequent contributors; the original copyright notice is retained as
 the license requires.
