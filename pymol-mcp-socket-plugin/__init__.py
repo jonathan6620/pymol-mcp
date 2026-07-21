@@ -594,8 +594,29 @@ class SocketServer:
         self.command_callback = None
 
     def start(self, command_callback=None):
-        """Start the socket server on a separate thread"""
+        """
+        Start the socket server on a separate thread.
+
+        Binds before returning, so a True result means the port really is
+        listening. Binding in the worker thread instead would make this return
+        True even when the port is already in use -- the caller would report a
+        listener that does not exist -- and would let a client connect before
+        the socket was ready.
+        """
         if self.running:
+            return False
+
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.bind((self.host, self.port))
+            self.socket.listen(1)
+            self.socket.settimeout(1.0)
+        except OSError as e:
+            _log(f"Could not listen on {self.host}:{self.port}: {e}")
+            if self.socket:
+                self.socket.close()
+                self.socket = None
             return False
 
         self.command_callback = command_callback
@@ -606,14 +627,8 @@ class SocketServer:
         return True
 
     def _run_server(self):
-        """Run the socket server in a separate thread"""
+        """Run the accept loop; the socket is already bound by start()."""
         try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.socket.bind((self.host, self.port))
-            self.socket.listen(1)
-            self.socket.settimeout(1.0)
-
             _log(f"PyMOL MCP Socket server listening on {self.host}:{self.port}")
 
             while self.running:
