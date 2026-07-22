@@ -9,6 +9,7 @@ Based on the concept of the "Rendering Plugin" from Michael Lerner.
 
 from __future__ import absolute_import, print_function
 
+import ast
 import json
 import os
 import socket
@@ -246,6 +247,98 @@ def stop_socket_server():
 
 
 ##############################################################################
+# ATOM EXPRESSION SAFETY
+##############################################################################
+
+# `alter` and `alter_state` hand their expression to PyMOL, which evaluates it
+# as Python once per atom. That is a genuine eval: verified that
+# `alter all, __import__('pathlib').Path('/tmp/x').write_text('x')` writes the
+# file. Every other command in the dispatcher is a fixed cmd.* call with string
+# arguments, so these two are the only way to get code executed, and this is
+# where that is stopped.
+#
+# Enforced here rather than in the MCP server because the socket is the real
+# boundary: anything on the machine can connect and send a command without
+# going through the server at all.
+
+# Per-atom properties PyMOL exposes to the expression namespace.
+ALTER_NAMES = frozenset({
+    "name", "resn", "resi", "resv", "chain", "segi", "elem", "alt", "b", "q",
+    "type", "formal_charge", "partial_charge", "numeric_type", "text_type",
+    "vdw", "ss", "color", "label", "ID", "index", "rank", "model", "state",
+    "cartoon", "flags", "geom", "valence", "protons", "oneletter", "reps",
+    "True", "False", "None",
+})
+ALTER_COORDINATE_NAMES = frozenset({"x", "y", "z"})
+# Calls are otherwise blocked outright; these are pure and cannot reach out.
+ALTER_CALLS = frozenset({"str", "int", "float", "abs", "round", "len", "min", "max"})
+
+# Anything not listed is rejected, so new syntax fails closed. Attribute and
+# Subscript are deliberately absent: they are what make `().__class__` and
+# similar sandbox escapes work.
+ALTER_NODES = (
+    ast.Expression, ast.Constant, ast.Name, ast.Load, ast.Call,
+    ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp,
+    ast.Tuple, ast.List,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.USub, ast.UAdd, ast.Not, ast.And, ast.Or,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn,
+)
+
+
+def _reject_control_characters(value):
+    """Refuse newlines and control characters in a selection.
+
+    Nothing in the dispatcher should ever build a PyMOL command string, but a
+    stray newline reaching one that does turns a selection into a second
+    command. Cheap to enforce here so a future handler cannot reintroduce it.
+    """
+    if not isinstance(value, str):
+        return
+    bad = [c for c in value if c in "\r\n" or (ord(c) < 32 and c != "\t")]
+    if bad:
+        raise ValueError("selection may not contain newlines or control characters")
+
+
+def check_atom_expression(expression, coordinates=False):
+    """Raise ValueError unless the expression is a safe atom-property formula.
+
+    Allows arithmetic, comparisons, conditionals and a few pure calls over
+    PyMOL's per-atom properties. Rejects attribute access, subscripting,
+    lambdas, comprehensions and any call that is not on the short list.
+    """
+    if not isinstance(expression, str) or not expression.strip():
+        raise ValueError("alter expression must be a non-empty string")
+
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as e:
+        raise ValueError(f"alter expression is not a valid expression: {e}")
+
+    allowed = ALTER_NAMES | ALTER_CALLS
+    if coordinates:
+        allowed = allowed | ALTER_COORDINATE_NAMES
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ALTER_NODES):
+            raise ValueError(
+                f"{type(node).__name__} is not allowed in an alter expression; "
+                "only arithmetic over atom properties is permitted"
+            )
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in ALTER_CALLS:
+                raise ValueError(
+                    "only these calls are allowed in an alter expression: "
+                    + ", ".join(sorted(ALTER_CALLS))
+                )
+        if isinstance(node, ast.Name) and node.id not in allowed:
+            raise ValueError(
+                f"'{node.id}' is not a known atom property; allowed names are: "
+                + ", ".join(sorted(allowed))
+            )
+
+
+##############################################################################
 # ALLOWLISTED COMMAND DISPATCH
 ##############################################################################
 
@@ -256,14 +349,32 @@ def build_command_dispatcher(cmd):
     Returns only allowlisted PyMOL API calls — no exec() or eval().
     """
 
-    def _do_command(command_name, args):
-        """Dispatch util.* commands via cmd.do() (PyMOL's command interpreter)."""
-        parts = [command_name]
-        for key in sorted(args.keys()):
-            if args[key]:
-                parts.append(str(args[key]))
-        cmd.do(' '.join(parts))
-        return "Command executed"
+    def _util_command(command_name, args):
+        """Call a pymol.util function directly.
+
+        These used to be assembled into a string and handed to cmd.do(), which
+        is PyMOL's full command interpreter: a newline in the selection let a
+        caller append `run /path/evil.pml` and have it executed. Calling the
+        function removes the interpreter from the path entirely.
+        """
+        import inspect
+
+        from pymol import util
+
+        name = command_name.split(".", 1)[1]
+        func = getattr(util, name, None)
+        if not callable(func):
+            raise ValueError(f"{command_name} is not available in this PyMOL")
+
+        selection = args.get("selection") or "all"
+        _reject_control_characters(selection)
+
+        # PyMOL's interpreter calls these with quiet=0; the Python default is
+        # quiet=1. util.cbc's chain listing is the only way to enumerate chains
+        # through this server, so the output has to be preserved.
+        if "quiet" in inspect.signature(func).parameters:
+            return func(selection, quiet=0)
+        return func(selection)
 
     def _show(args):
         return cmd.show(
@@ -300,7 +411,9 @@ def build_command_dispatcher(cmd):
         )
 
     def _label(args):
-        return cmd.label(args.get("selection", "all"), args.get("expression", "name"))
+        expression = args.get("expression", "name")
+        check_atom_expression(expression)
+        return cmd.label(args.get("selection", "all"), expression)
 
     def _distance(args):
         return cmd.distance(
@@ -433,16 +546,20 @@ def build_command_dispatcher(cmd):
         return cmd.intra_rms(args.get("selection", "all"))
 
     def _alter(args):
-        return cmd.alter(args.get("selection", "all"), args.get("expression", ""))
+        expression = args.get("expression", "")
+        check_atom_expression(expression)
+        return cmd.alter(args.get("selection", "all"), expression)
 
     def _alter_state(args):
+        expression = args.get("expression", "")
+        check_atom_expression(expression, coordinates=True)
         state = args.get("state", "1")
         try:
             state = int(state)
         except (ValueError, TypeError):
             state = 1
         return cmd.alter_state(
-            state, args.get("selection", "all"), args.get("expression", "")
+            state, args.get("selection", "all"), expression
         )
 
     def _h_add(args):
@@ -469,8 +586,11 @@ def build_command_dispatcher(cmd):
         return cmd.refresh()
 
     def _spheroid(args):
-        # spheroid is typically invoked via cmd.do
-        return cmd.do(f"spheroid {args.get('selection', 'all')}")
+        # cmd.spheroid takes an object name directly; going through cmd.do
+        # would put PyMOL's command interpreter back in the path.
+        selection = args.get("selection", "all")
+        _reject_control_characters(selection)
+        return cmd.spheroid(selection)
 
     def _isomesh(args):
         level = args.get("level", "1.0")
@@ -699,7 +819,7 @@ def build_command_dispatcher(cmd):
         "help": _help,
     }
 
-    # util.* commands all go through cmd.do() which is PyMOL's safe command interpreter
+    # util.* commands are called directly; see _util_command for why.
     util_commands = [
         "util.cbc", "util.cbaw", "util.cbag", "util.cbac", "util.cbam",
         "util.cbay", "util.cbas", "util.cbab", "util.cbao", "util.cbap",
@@ -707,7 +827,7 @@ def build_command_dispatcher(cmd):
         "util.color_by_element",
     ]
     for util_cmd in util_commands:
-        dispatcher[util_cmd] = lambda args, name=util_cmd: _do_command(name, args)
+        dispatcher[util_cmd] = lambda args, name=util_cmd: _util_command(name, args)
 
     return dispatcher
 

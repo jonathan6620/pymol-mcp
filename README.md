@@ -294,6 +294,15 @@ to disable. The variable is read from the environment PyMOL was launched from.
   treat a stdio server's stderr as an error stream and display every line. Set
   `PYMOL_MCP_LOG_LEVEL=INFO` (or `DEBUG`) in the server's `env` block to turn logging back on.
 
+## Security
+
+The listener binds to localhost and has no authentication, so any local process
+can drive PyMOL through it.
+
+`alter` and `alter_state` take expressions that PyMOL evaluates as Python. The
+plugin parses those first and allows only arithmetic over atom properties,
+rejecting attribute access, subscripting, lambdas and comprehensions.
+
 ## Limitations & Notes
 
 - The socket connection requires both PyMOL and Claude to be running on the same machine

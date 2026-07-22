@@ -116,6 +116,12 @@ patterns. Anything unrecognised is rejected, not interpreted.
 | `iterate` / `print` | neither | `select tmp, <sel>`, which returns an atom count |
 | RNA vs DNA selector | neither | residue names, see below |
 
+`alter` and `alter_state` expressions are restricted to arithmetic over atom
+properties, because PyMOL evaluates them as Python. `b + 10`, `int(resi) + 100`
+and `'A' if chain == 'B' else chain` are fine; attribute access, subscripting,
+lambdas, comprehensions and any call outside `str int float abs round len min
+max` are rejected.
+
 There is no way to read state back *through the server*. `select` returning an
 atom count is the only introspection available, and rendering an image is the
 only way to see the scene. Two things off to the side help: the structure file
