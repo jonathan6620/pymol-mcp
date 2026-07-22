@@ -24,7 +24,6 @@ socket_server = None
 # Bounded: nothing reads this back, and an unbounded list would grow for the
 # life of the PyMOL process. The on-disk history below is the durable record.
 received_commands = deque(maxlen=200)
-listening = False
 current_port = 9876  # Default port
 # Each PyMOL claims the first free port here, so several can run at once. The
 # MCP server discovers them by scanning the same range, which needs no registry
@@ -163,6 +162,51 @@ def _record_history(command_name, args, source, result):
         _log("Command history disabled after a write error: %s" % e)
 
 
+def _record_event(kind, detail):
+    """Append a non-command event to history.jsonl. Never raises."""
+    global _history_broken
+
+    if _history_broken:
+        return
+    try:
+        with _history_lock:
+            directory, _ = _history_paths()
+            if directory is None:
+                return
+            record = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "event": kind,
+                "detail": detail,
+                "ok": False,
+            }
+            with open(os.path.join(directory, "history.jsonl"), "a") as fh:
+                fh.write(json.dumps(record) + "\n")
+    except Exception as e:
+        _history_broken = True
+        _log("Command history disabled after a write error: %s" % e)
+
+
+def _report_listener_death(port, error):
+    """Announce that the listener stopped without being asked to.
+
+    Deliberately not routed through _log. VERBOSE exists because stray prints
+    from the socket thread corrupt the MCP client's terminal, and the reasoning
+    was that command errors reach the client as tool results anyway. That does
+    not hold here: a listener that has died cannot report itself through the
+    socket, and every client-side symptom ("no PyMOL is listening") is
+    indistinguishable from PyMOL having been closed. This is once per session.
+    """
+    reason = f": {error}" if error else " unexpectedly"
+    message = (
+        f"MCP socket listener on port {port} stopped{reason}. "
+        "PyMOL is still running; call start_socket_server() to restart it."
+    )
+    print(message)
+    if error and VERBOSE:
+        traceback.print_exc()
+    _record_event("listener_died", message)
+
+
 def __init_plugin__(app=None):
     '''
     Add an entry to the PyMOL "Plugin" menu
@@ -231,9 +275,9 @@ def start_socket_server(port=None):
     gets its own listener instead of silently having none. The MCP server finds
     them by scanning the same range. Pass a port explicitly to pin one.
     """
-    global socket_server, listening, current_port
+    global socket_server, current_port
 
-    if listening:
+    if is_listening():
         return False
 
     candidates = [port] if port else list(PORT_RANGE)
@@ -242,7 +286,6 @@ def start_socket_server(port=None):
         if server.start(execute_structured_command):
             socket_server = server
             current_port = candidate
-            listening = True
             return True
 
     return False
@@ -266,13 +309,22 @@ def describe_instance(port):
     return info
 
 
+def is_listening():
+    """True when a listener thread is actually running.
+
+    Derived from the server rather than tracked in a separate flag. A tracked
+    flag desynced when the accept loop died: it stayed True, so
+    start_socket_server refused to restart ("returns False and does nothing,
+    so it looks like it worked") and the dialog showed green while nothing was
+    bound. Asking the server cannot drift.
+    """
+    return socket_server is not None and socket_server.running
+
+
 def stop_socket_server():
     """Stop the MCP socket listener if it is running."""
-    global listening
-
-    if socket_server and listening:
+    if socket_server is not None:
         socket_server.stop()
-    listening = False
 
 
 ##############################################################################
@@ -873,10 +925,17 @@ class SocketServer:
         self.host = host
         self.port = port
         self.socket = None
-        self.client = None
         self.running = False
         self.thread = None
         self.command_callback = None
+        # Connections are served concurrently, one thread each.
+        self._clients = set()
+        self._clients_lock = threading.Lock()
+        # ...but PyMOL itself is driven one command at a time.
+        self._command_lock = threading.Lock()
+        # Set by stop() so the accept loop can tell a requested shutdown from
+        # a crash, and only report the latter.
+        self._stopping = False
 
     def start(self, command_callback=None):
         """
@@ -907,7 +966,7 @@ class SocketServer:
                 # not allow two live listeners, so the bind below still fails.
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.socket.bind((self.host, self.port))
-            self.socket.listen(1)
+            self.socket.listen(8)
             self.socket.settimeout(1.0)
         except OSError as e:
             _log(f"Could not listen on {self.host}:{self.port}: {e}")
@@ -917,6 +976,7 @@ class SocketServer:
             return False
 
         self.command_callback = command_callback
+        self._stopping = False
         self.running = True
         self.thread = threading.Thread(target=self._run_server)
         self.thread.daemon = True
@@ -924,71 +984,118 @@ class SocketServer:
         return True
 
     def _run_server(self):
-        """Run the accept loop; the socket is already bound by start()."""
+        """Run the accept loop; the socket is already bound by start().
+
+        The loop must survive anything a single connection throws. It used to
+        wrap the whole `while` in one try, so one escaped exception closed the
+        socket and ended the thread for the life of the PyMOL process, with no
+        message anywhere. If the loop does exit unexpectedly, that is reported
+        unconditionally rather than through _log, because a dead listener is
+        the one failure that cannot report itself through the socket.
+        """
+        failure = None
         try:
             _log(f"PyMOL MCP Socket server listening on {self.host}:{self.port}")
 
             while self.running:
                 try:
-                    self.client, address = self.socket.accept()
-                    _log(f"Connected to client: {address}")
-                    self.client.settimeout(1.0)
-
-                    buffer = b''
-                    while self.running:
-                        try:
-                            data = self.client.recv(4096)
-                            if not data:
-                                break
-
-                            buffer += data
-
-                            try:
-                                command = json.loads(buffer.decode('utf-8'))
-                                buffer = b''
-
-                                result = self._handle_command(command)
-
-                                failed = isinstance(result, dict) and (
-                                    result.get("executed") is False
-                                )
-                                if failed:
-                                    response = json.dumps({
-                                        "status": "error",
-                                        "message": result.get("error", "Unknown error")
-                                    })
-                                else:
-                                    response = json.dumps({
-                                        "status": "success",
-                                        "result": result or "Command executed",
-                                    })
-                                self.client.sendall(response.encode('utf-8'))
-                            except json.JSONDecodeError:
-                                continue
-
-                        except socket.timeout:
-                            continue
-                        except Exception as e:
-                            _log(f"Error receiving data: {str(e)}")
-                            break
-
-                    if self.client:
-                        self.client.close()
-                        self.client = None
+                    client, address = self.socket.accept()
                 except socket.timeout:
                     continue
                 except Exception as e:
+                    # Never terminal. Anything a single accept raises is logged
+                    # and the loop goes round again; only self.running going
+                    # False ends it normally.
                     _log(f"Error accepting connection: {str(e)}")
+                    if VERBOSE:
+                        traceback.print_exc()
+                    # A dead listening socket cannot be accepted from again, so
+                    # stop rather than spinning at full speed on the same error.
+                    if self.socket is None or self.socket.fileno() < 0:
+                        failure = e
+                        break
+                    time.sleep(0.1)
+                    continue
+
+                _log(f"Connected to client: {address}")
+                client.settimeout(1.0)
+                with self._clients_lock:
+                    self._clients.add(client)
+                worker = threading.Thread(
+                    target=self._serve_client, args=(client,)
+                )
+                worker.daemon = True
+                worker.start()
 
         except Exception as e:
-            _log(f"Socket server error: {str(e)}")
-            if VERBOSE:
-                traceback.print_exc()
+            failure = e
         finally:
             if self.socket:
                 self.socket.close()
+            was_stopping = self._stopping
             self.running = False
             _log("Socket server stopped")
+            if not was_stopping:
+                _report_listener_death(self.port, failure)
+
+    def _serve_client(self, client):
+        """Read and answer one client until it disconnects.
+
+        Runs on its own thread. Previously the accept loop did this inline, so
+        the server handled exactly one client at a time and an idle persistent
+        connection blocked every other caller indefinitely. The MCP server
+        holds its connection open between commands, which meant an instance it
+        was attached to could not answer an instance_info probe and dropped out
+        of discovery entirely.
+        """
+        buffer = b''
+        try:
+            while self.running:
+                try:
+                    data = client.recv(4096)
+                    if not data:
+                        break
+
+                    buffer += data
+                    try:
+                        command = json.loads(buffer.decode('utf-8'))
+                    except json.JSONDecodeError:
+                        # A partial message; wait for the rest.
+                        continue
+                    buffer = b''
+
+                    # PyMOL is not safe to drive from several threads at once,
+                    # so connections are concurrent but commands are not.
+                    with self._command_lock:
+                        result = self._handle_command(command)
+
+                    failed = isinstance(result, dict) and (
+                        result.get("executed") is False
+                    )
+                    if failed:
+                        response = json.dumps({
+                            "status": "error",
+                            "message": result.get("error", "Unknown error"),
+                        })
+                    else:
+                        response = json.dumps({
+                            "status": "success",
+                            "result": result or "Command executed",
+                        })
+                    client.sendall(response.encode('utf-8'))
+
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    _log(f"Error serving client: {str(e)}")
+                    break
+        finally:
+            with self._clients_lock:
+                self._clients.discard(client)
+            try:
+                client.close()
+            except Exception:
+                pass
 
     def _handle_command(self, command):
         """Handle received structured command"""
@@ -1014,15 +1121,21 @@ class SocketServer:
 
     def stop(self):
         """Stop the socket server"""
+        self._stopping = True
         self.running = False
         if self.thread:
-            self.thread.join(2.0)
-        if self.client:
-            self.client.close()
+            self.thread.join(3.0)
+        with self._clients_lock:
+            clients = list(self._clients)
+            self._clients.clear()
+        for client in clients:
+            try:
+                client.close()
+            except Exception:
+                pass
         if self.socket:
             self.socket.close()
         self.socket = None
-        self.client = None
         self.thread = None
 
 
@@ -1051,26 +1164,30 @@ def make_dialog():
     form = loadUi(uifile, dialog)
 
     # Reflect the current state — the server may already have been started
-    # from `.pymolrc.py` before the dialog was ever opened.
-    form.input_port.setValue(current_port)
-    if listening:
-        form.button_toggle_listening.setText("Stop Listening")
-        update_status_label(form, f"Listening on port {current_port}")
-    else:
-        update_status_label(form, "Not listening")
-
-    def toggle_listening():
-        if not listening:
-            if start_socket_server(form.input_port.value()):
-                form.button_toggle_listening.setText("Stop Listening")
-                update_status_label(form, f"Listening on port {current_port}")
+    # from `.pymolrc.py` before the dialog was ever opened. is_listening()
+    # asks the server, so the label cannot claim green while nothing is bound.
+    def refresh():
+        if is_listening():
+            form.button_toggle_listening.setText("Stop Listening")
+            update_status_label(form, f"Listening on port {current_port}")
         else:
-            stop_socket_server()
             form.button_toggle_listening.setText("Start Listening")
             update_status_label(form, "Not listening")
 
+    form.input_port.setValue(current_port)
+    refresh()
+
+    def toggle_listening():
+        if is_listening():
+            stop_socket_server()
+        else:
+            start_socket_server(form.input_port.value())
+        refresh()
+
     def close_dialog():
-        stop_socket_server()
+        # Closing the dialog leaves the listener alone. It used to stop it,
+        # so dismissing the window silently ended the session and every
+        # later command failed with "no PyMOL is listening".
         dialog.close()
 
     form.button_toggle_listening.clicked.connect(toggle_listening)
