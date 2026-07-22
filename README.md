@@ -2,9 +2,8 @@
 
 PyMOL-MCP connects PyMOL to Claude AI through the Model Context Protocol (MCP), enabling Claude to directly interact with and control PyMOL. This powerful integration allows for conversational structural biology, molecular visualization, and analysis through natural language.
 
-> Originally created by [Vishnu Rajan Tejus](https://github.com/vrtejus) as
-> [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp). This is a continuation
-> of that work. See [Credits](#credits).
+> Derived from [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp) by
+> [Vishnu Rajan Tejus](https://github.com/vrtejus). See [Credits](#credits).
 
 
 ## Features
@@ -287,15 +286,13 @@ make test
 
 ## Credits
 
-PyMOL-MCP was created by **[Vishnu Rajan Tejus](https://github.com/vrtejus)** at
-[vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp), with a documentation
-contribution from [Dimple Amitha Garuadapuri](https://github.com/AmithaGaruadapuri).
-The socket plugin, the MCP server, and the original PyMOL command bridge are all
-their work.
+Derived from [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp) by
+[Vishnu Rajan Tejus](https://github.com/vrtejus). The socket transport and the
+Qt dialog are largely unchanged from that project.
 
-This repository continues that project independently rather than as a GitHub
-fork, so it can diverge freely. The full upstream commit history is preserved
-here; `git log` shows the original authorship. Changes since the fork point:
+This repository continues it independently rather than as a GitHub fork, so it
+can diverge freely. The full upstream commit history is preserved here; `git log`
+shows the original authorship. Changes since the fork point:
 
 - Replaced `exec()` with an allowlisted command dispatcher
 - Added Pydantic models, type hints, and a test suite
