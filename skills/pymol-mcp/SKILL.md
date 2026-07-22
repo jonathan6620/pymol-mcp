@@ -26,20 +26,140 @@ patterns. Anything unrecognised is rejected, not interpreted.
 | `iterate` / `print` | neither | `select tmp, <sel>`, which returns an atom count |
 | RNA vs DNA selector | neither | residue names, see below |
 
-There is no way to read state back. `select` returning an atom count is the only
-introspection available, and rendering an image is the only way to see the scene.
+There is no way to read state back *through the server*. `select` returning an
+atom count is the only introspection available, and rendering an image is the
+only way to see the scene. Two things off to the side help: the structure file
+is on disk and you have ordinary file tools, and everything you have already run
+is logged. See "Read the structure file directly" and "What you ran is on disk".
 
 ## Always verify by rendering
 
-State drifts. The user may rotate the camera, reload the structure, or restyle
-in the GUI between calls. This has happened mid-session, silently discarding
-every setting. After any visual change, render and actually look at it:
+After any visual change, render and actually look at it:
 
 ```
 png /path/to/scratchpad/check.png, width=1000, height=800, dpi=150, ray=1
 ```
 
 Then `Read` the PNG. Never claim a visual change worked without looking.
+
+**Delete named selections before rendering.** A `select` leaves magenta
+indicator dots on every selected atom, and they show up in the ray-traced image
+sitting exactly where the atoms are. Hide a component while its selection still
+exists and the render looks like the hide silently failed. `delete <name>` (or
+`deselect`) first, then render.
+
+### State drifts, including representations
+
+The user may rotate the camera, reload, or restyle in the GUI between calls, and
+none of it is visible to you. Observed in a single session: the camera moved
+between most renders; the whole session was cleared mid-task; a component that
+had been hidden came back; sphere representations vanished; ions that had been
+hidden reappeared. Do not assume a command you ran two calls ago still holds —
+if it matters, re-run it or re-render.
+
+### When the render comes back blank
+
+An all-background image has two very different causes, and there is no way to
+tell them apart by looking. Check which one it is before reaching for view
+commands:
+
+```
+select tmp_all, all
+```
+
+A count of `0` means **nothing is loaded** — the session was cleared, and no
+amount of `zoom` or `reset` will help. A non-zero count means the geometry is
+there and the camera is pointed wrong, so `zoom visible` is the fix.
+
+## Framing the view
+
+The table has `zoom`, `center`, `orient`, `reset` and `viewport`. Two notes:
+
+- `zoom` defaults to `selection=all`, and "all" includes **hidden** atoms.
+  Tested on a structure whose hidden RNA was 13,792 of ~19,000 atoms: a bare
+  `zoom` left the visible protein filling about a fifth of the frame height,
+  while `zoom visible` from the identical state filled about three quarters.
+  Use `zoom visible`.
+- `visible` also picks up anything else still shown, including stray ions, which
+  will pad the framing. Hide those first if you want a tight crop.
+- `hide` never recentres anything. Follow a hide with `zoom visible` whenever the
+  thing you kept is a small part of the assembly.
+
+## Read the structure file directly
+
+The no-`iterate` limitation applies only to the server. If you know the path,
+parse the CIF/PDB yourself and you get the whole inventory at once — chain IDs,
+residue names, per-chain atom counts, and which chains are protein, DNA, RNA or
+ions. That is strictly better than inferring chains from `util.cbc`, and it lets
+you sanity-check a `select` count before trusting it:
+
+```
+chain A:   4117 atoms  protein
+chain D:    204 atoms  DNA
+chain E:    884 atoms  DNA        # 204+884+225 = 1313, matches select count
+chain I:  13792 atoms  RNA
+```
+
+Small 2–4 atom "chains" are usually ions, and they are what `solvent or
+inorganic` catches.
+
+## What you ran is on disk
+
+The plugin logs every command to `~/.pymol-mcp/` as it runs, which is the one
+piece of session state you *can* read back:
+
+| File | Use it for |
+|---|---|
+| `history.jsonl` | What was run, in order, and which commands failed |
+| `session-<timestamp>.pml` | Handing the user a script that rebuilds the figure |
+
+Cannot remember whether a setting was applied, or which of several attempts
+actually worked? Check, rather than re-running blind:
+
+```
+tail -20 ~/.pymol-mcp/history.jsonl
+grep '"ok": false' ~/.pymol-mcp/history.jsonl
+```
+
+Each record has `command`, `args`, `source` (the literal syntax), `ok`, and
+either `output` or `error`. `load`, `save` and `png` also carry a `file` entry
+with the **absolute** path and whether it was read or written, so this answers
+"where did that PNG go" when the original command used a relative path.
+
+The `.pml` is the deliverable when someone asks how a figure was made. It holds
+only the commands that succeeded, so it replays cleanly:
+
+```
+pymol -r ~/.pymol-mcp/session-20260722-114646.pml
+```
+
+Two caveats. The history is per PyMOL launch, so a restart starts a new `.pml`
+while `history.jsonl` keeps appending. Anything the user did in the GUI is not
+recorded, because it never went through the server, which is another reason a
+replay can diverge from what is on screen.
+
+## Recovering a session that was cleared
+
+If the structure vanishes and you did not load it yourself, you cannot ask PyMOL
+what it was. Check the session history the plugin writes:
+
+```
+grep '"command": "\(fetch\|load\)"' ~/.pymol-mcp/history.jsonl | tail -5
+```
+
+Every `load` records the absolute path it read, so this identifies the file even
+when the original command used a relative path. There is no `~/.pymol` history
+and no `~/.pymolhistory`; those were checked and do not exist.
+
+Failing that, the Claude Code transcripts also record every command sent:
+
+```
+grep -o '"user_input":"\(fetch\|load\)[^"]*"' ~/.claude/projects/**/*.jsonl
+```
+
+Before trusting a hit, fingerprint it: parse the file's atom counts and check
+they match the `select` counts you saw earlier in the session. Reloading the
+wrong structure and carrying on is worse than admitting you lost it.
 
 ## Selecting the pieces
 
@@ -59,6 +179,30 @@ select rna, polymer.nucleic and not resn DA+DC+DG+DT+DI
 
 Both calls return atom counts, so use them as a sanity check. Modified or
 non-standard residues fall on the RNA side, so confirm the counts look sane.
+
+### Negative residue numbers must be escaped
+
+`resi` treats `-` as a range operator, so a negative residue number is silently
+read as an open-ended range instead: `resi -12` means "everything up to 12", not
+"residue −12". It does not error — it just selects far too much. Escape the
+minus sign with a backslash:
+
+```
+select t, chain E and resi \-12      -> 20     one nucleotide, correct
+select t, chain E and resi -12       -> 719    parsed as "resi <= 12"
+```
+
+Nucleic acid chains hit this constantly, since numbering conventionally runs
+negative upstream of a reference point. The escaped form composes normally in a
+`+` list:
+
+```
+select cww, chain E and resi \-12+\-11+\-10+1+2
+```
+
+Because the failure is silent, always check the returned atom count against
+what you expect (roughly 20 atoms per nucleotide, 8 per amino acid) before
+acting on a selection with negative numbering in it.
 
 ## Enumerating and colouring chains
 
