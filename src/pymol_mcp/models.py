@@ -1,7 +1,7 @@
 """Pydantic models for the PyMOL MCP server."""
 
 import re
-from typing import Any, Dict, Iterator, List, Literal, Optional
+from typing import Any, Iterator, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -11,12 +11,12 @@ class ParameterDef(BaseModel):
 
     name: str
     required: bool
-    default: Optional[str] = None
-    options: List[str] = []
+    default: str | None = None
+    options: list[str] = []
 
     @field_validator("options")
     @classmethod
-    def no_duplicate_options(cls, v: List[str]) -> List[str]:
+    def no_duplicate_options(cls, v: list[str]) -> list[str]:
         if len(v) != len(set(v)):
             dupes = {x for x in v if v.count(x) > 1}
             raise ValueError(f"Duplicate options: {dupes}")
@@ -28,7 +28,7 @@ class CommandDef(BaseModel):
 
     description: str
     pattern: str
-    parameters: List[ParameterDef]
+    parameters: list[ParameterDef]
     check_selection: bool
     composite: bool = False
 
@@ -65,7 +65,7 @@ class ErrorCategory(BaseModel):
     """Error pattern group (label + regex patterns)."""
 
     label: str
-    patterns: List[str]
+    patterns: list[str]
 
     @field_validator("label")
     @classmethod
@@ -76,7 +76,7 @@ class ErrorCategory(BaseModel):
 
     @field_validator("patterns")
     @classmethod
-    def patterns_valid_regex(cls, v: List[str]) -> List[str]:
+    def patterns_valid_regex(cls, v: list[str]) -> list[str]:
         for p in v:
             try:
                 re.compile(p)
@@ -90,26 +90,26 @@ class SocketRequest(BaseModel):
 
     type: Literal["structured_command"] = "structured_command"
     command: str
-    args: Dict[str, Any]
+    args: dict[str, Any]
     # The literal PyMOL syntax this command was parsed from. The plugin writes
     # it to the replayable session script, and uses its absence to tell an
     # internal call (the connection health-check ping) from a real one.
-    source: Optional[str] = None
+    source: str | None = None
 
 
 class SocketResponse(BaseModel):
     """Inbound response message from PyMOL."""
 
     status: Literal["success", "error"]
-    result: Optional[Any] = None
-    message: Optional[str] = None
+    result: Any | None = None
+    message: str | None = None
 
 
 class ParseResult(BaseModel):
     """Return type of parse_pymol_input. Supports tuple unpacking."""
 
     command: str
-    args: Dict[str, Any]
+    args: dict[str, Any]
 
     def __iter__(self) -> Iterator:
         """Support tuple unpacking: cmd, args = parse_pymol_input(...)"""

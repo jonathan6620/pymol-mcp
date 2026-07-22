@@ -5,7 +5,7 @@ import os
 import re
 import socket
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -22,19 +22,42 @@ from pymol_mcp.models import (
 # PYMOL COMMAND DEFINITIONS AND ERROR PATTERNS
 ##############################################################################
 
-PYMOL_COMMANDS: Dict[str, CommandDef] = {
+PYMOL_COMMANDS: dict[str, CommandDef] = {
     # MOLECULAR VISUALIZATION
     "show": CommandDef(
         description="Shows a representation for the specified selection",
         pattern=r"^show\s+([\w.]+)(?:\s*,\s*(.+))?$",
         parameters=[
-            ParameterDef(name="representation", required=True, options=[
-                "lines", "sticks", "spheres", "surface", "mesh", "dots",
-                "ribbon", "cartoon", "labels", "nonbonded", "nb_spheres",
-                "ellipsoids", "volume", "slice", "extent", "dots_as_spheres",
-                "cell", "cgo", "everything", "dashes", "angles", "dihedrals",
-                "licorice", "putty"
-            ]),
+            ParameterDef(
+                name="representation",
+                required=True,
+                options=[
+                    "lines",
+                    "sticks",
+                    "spheres",
+                    "surface",
+                    "mesh",
+                    "dots",
+                    "ribbon",
+                    "cartoon",
+                    "labels",
+                    "nonbonded",
+                    "nb_spheres",
+                    "ellipsoids",
+                    "volume",
+                    "slice",
+                    "extent",
+                    "dots_as_spheres",
+                    "cell",
+                    "cgo",
+                    "everything",
+                    "dashes",
+                    "angles",
+                    "dihedrals",
+                    "licorice",
+                    "putty",
+                ],
+            ),
             ParameterDef(name="selection", required=False, default="all"),
         ],
         check_selection=True,
@@ -43,13 +66,36 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         description="Hides a representation for the specified selection",
         pattern=r"^hide\s+([\w.]+)(?:\s*,\s*(.+))?$",
         parameters=[
-            ParameterDef(name="representation", required=True, options=[
-                "lines", "sticks", "spheres", "surface", "mesh", "dots",
-                "ribbon", "cartoon", "labels", "nonbonded", "nb_spheres",
-                "ellipsoids", "volume", "slice", "extent", "dots_as_spheres",
-                "cell", "cgo", "everything", "dashes", "angles", "dihedrals",
-                "licorice", "putty"
-            ]),
+            ParameterDef(
+                name="representation",
+                required=True,
+                options=[
+                    "lines",
+                    "sticks",
+                    "spheres",
+                    "surface",
+                    "mesh",
+                    "dots",
+                    "ribbon",
+                    "cartoon",
+                    "labels",
+                    "nonbonded",
+                    "nb_spheres",
+                    "ellipsoids",
+                    "volume",
+                    "slice",
+                    "extent",
+                    "dots_as_spheres",
+                    "cell",
+                    "cgo",
+                    "everything",
+                    "dashes",
+                    "angles",
+                    "dihedrals",
+                    "licorice",
+                    "putty",
+                ],
+            ),
             ParameterDef(name="selection", required=False, default="all"),
         ],
         check_selection=True,
@@ -97,10 +143,20 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         description="Sets the cartoon type for the specified selection",
         pattern=r"^cartoon\s+([\w.]+)(?:\s*,\s*(.+))?$",
         parameters=[
-            ParameterDef(name="type", required=True, options=[
-                "automatic", "loop", "rectangle", "oval", "tube", "arrow",
-                "dumbbell", "putty"
-            ]),
+            ParameterDef(
+                name="type",
+                required=True,
+                options=[
+                    "automatic",
+                    "loop",
+                    "rectangle",
+                    "oval",
+                    "tube",
+                    "arrow",
+                    "dumbbell",
+                    "putty",
+                ],
+            ),
             ParameterDef(name="selection", required=False, default="all"),
         ],
         check_selection=True,
@@ -157,7 +213,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         ],
         check_selection=True,
     ),
-
     # VIEWING OPERATIONS
     "center": CommandDef(
         description="Centers the view on a selection",
@@ -214,14 +269,15 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         description="Adjusts the clipping planes",
         pattern=r"^clip\s+([\w.]+)(?:\s*,\s*(.+))?$",
         parameters=[
-            ParameterDef(name="mode", required=True, options=[
-                "near", "far", "slab", "atoms", "near_slab", "far_slab"
-            ]),
+            ParameterDef(
+                name="mode",
+                required=True,
+                options=["near", "far", "slab", "atoms", "near_slab", "far_slab"],
+            ),
             ParameterDef(name="distance", required=False, default="1"),
         ],
         check_selection=False,
     ),
-
     # FILE OPERATIONS
     "load": CommandDef(
         description="Loads a file into PyMOL",
@@ -262,7 +318,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         ],
         check_selection=False,
     ),
-
     # SELECTION OPERATIONS
     "select": CommandDef(
         description="Creates a named selection",
@@ -279,7 +334,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         parameters=[],
         check_selection=False,
     ),
-
     # OBJECT MANIPULATION
     "create": CommandDef(
         description="Creates a new object from a selection",
@@ -352,7 +406,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         ],
         check_selection=True,
     ),
-
     # UTILITY AND MODIFICATION
     "alter": CommandDef(
         description=(
@@ -428,7 +481,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         parameters=[],
         check_selection=False,
     ),
-
     # UTILITY FUNCTIONS
     "util.cbc": CommandDef(
         description="Colors by chain (Color By Chain)",
@@ -536,8 +588,7 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
     ),
     "color_ss": CommandDef(
         description=(
-            "Colors by secondary structure: helices red, sheets yellow, "
-            "loops green"
+            "Colors by secondary structure: helices red, sheets yellow, loops green"
         ),
         pattern=r"^color_ss(?:\s+(.+))?$",
         parameters=[
@@ -546,7 +597,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         check_selection=True,
         composite=True,
     ),
-
     # MOLECULAR DYNAMICS AND ANALYSIS
     "spheroid": CommandDef(
         description="Displays atoms as smooth spheres",
@@ -603,7 +653,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         ],
         check_selection=False,
     ),
-
     # SCENES AND MOVIES
     "scene": CommandDef(
         description="Manages scenes for later recall",
@@ -668,7 +717,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         parameters=[],
         check_selection=False,
     ),
-
     # RENDERING
     "ray": CommandDef(
         description="Performs ray-tracing",
@@ -696,7 +744,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         ],
         check_selection=False,
     ),
-
     # CRYSTALLOGRAPHY
     "symexp": CommandDef(
         description="Generates symmetry-related copies",
@@ -723,7 +770,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         ],
         check_selection=True,
     ),
-
     # OTHER
     "fab": CommandDef(
         description="Creates a peptide chain from a sequence",
@@ -769,45 +815,41 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
 
 
 ERROR_PATTERNS = {
-    "SYNTAX_ERROR": [
-        r"Syntax error",
-        r"invalid syntax",
-        r"Unknown command"
-    ],
+    "SYNTAX_ERROR": [r"Syntax error", r"invalid syntax", r"Unknown command"],
     "SELECTION_ERROR": [
         r"Invalid selection",
         r"No atoms selected",
         r"Selection not found",
-        r"Selection \S+ doesn't exist"
+        r"Selection \S+ doesn't exist",
     ],
     "OBJECT_NOT_FOUND": [
         r"object \S+ not found",
         r"Object \S+ does not exist",
-        r"Unable to find object named \S+"
+        r"Unable to find object named \S+",
     ],
     "ATOM_NOT_FOUND": [
         r"No atoms matched",
         r"No atoms in selection",
-        r"Atom not found"
+        r"Atom not found",
     ],
     "FILE_ERROR": [
         r"Unable to open file",
         r"No such file",
         r"Permission denied",
         r"Error reading file",
-        r"Error writing file"
+        r"Error writing file",
     ],
     "CONNECTION_ERROR": [
         r"Connection refused",
         r"Network error",
         r"Timeout",
-        r"Failed to fetch"
+        r"Failed to fetch",
     ],
     "PARAMETER_ERROR": [
         r"Incorrect number of parameters",
         r"Invalid parameter",
-        r"Parameter out of range"
-    ]
+        r"Parameter out of range",
+    ],
 }
 
 # Validate ERROR_PATTERNS at module load time
@@ -836,13 +878,14 @@ else:
 # PYMOL SOCKET CONNECTION
 ##############################################################################
 
+
 class PyMOLConnection:
-    def __init__(self, host: str = 'localhost', port: int = 9876) -> None:
+    def __init__(self, host: str = "localhost", port: int = 9876) -> None:
         if not (1 <= port <= 65535):
             raise ValueError(f"Port must be between 1 and 65535, got {port}")
         self.host = host
         self.port = port
-        self.sock: Optional[socket.socket] = None
+        self.sock: socket.socket | None = None
 
     def connect(self) -> bool:
         if self.sock:
@@ -867,8 +910,8 @@ class PyMOLConnection:
                 self.sock = None
 
     def send_command(
-        self, command: str, args: Dict[str, Any], source: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, command: str, args: dict[str, Any], source: str | None = None
+    ) -> dict[str, Any]:
         """
         Sends a structured command to PyMOL via the socket plugin.
         Instead of sending raw code, sends {"type": "structured_command",
@@ -885,7 +928,7 @@ class PyMOLConnection:
             # exclude_none keeps the payload byte-identical to before `source`
             # existed whenever it is unset, so an older plugin sees no change.
             payload = request.model_dump(exclude_none=True)
-            self.sock.sendall(json.dumps(payload).encode('utf-8'))
+            self.sock.sendall(json.dumps(payload).encode("utf-8"))
             self.sock.settimeout(10.0)
             chunks: list[bytes] = []
             while True:
@@ -893,15 +936,15 @@ class PyMOLConnection:
                 if not chunk:
                     break
                 chunks.append(chunk)
-                buffer = b''.join(chunks)
+                buffer = b"".join(chunks)
                 try:
-                    response = json.loads(buffer.decode('utf-8'))
+                    response = json.loads(buffer.decode("utf-8"))
                     return response
                 except json.JSONDecodeError:
                     continue
             if chunks:
-                buffer = b''.join(chunks)
-                return json.loads(buffer.decode('utf-8'))
+                buffer = b"".join(chunks)
+                return json.loads(buffer.decode("utf-8"))
             raise ConnectionError("No response from PyMOL")
         except socket.timeout:
             self.sock = None
@@ -909,6 +952,7 @@ class PyMOLConnection:
         except Exception as e:
             self.sock = None
             raise RuntimeError(f"PyMOL command error: {e}")
+
 
 # Each PyMOL claims the first free port here; see PORT_RANGE in the plugin.
 # Discovery is a scan rather than a registry file: nothing to clean up when an
@@ -918,28 +962,30 @@ PORT_RANGE = range(9876, 9896)
 SCAN_TIMEOUT = 0.2
 
 
-def discover_instances() -> list[Dict[str, Any]]:
+def discover_instances() -> list[dict[str, Any]]:
     """Find every listening PyMOL and ask each to identify itself.
 
     Returns dicts with port, pid and loaded objects, ordered by port. An
     instance that answers nothing usable is still reported, since it is
     reachable and the user may want to know it is there.
     """
-    found: list[Dict[str, Any]] = []
+    found: list[dict[str, Any]] = []
     for port in PORT_RANGE:
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         probe.settimeout(SCAN_TIMEOUT)
         try:
-            if probe.connect_ex(('localhost', port)) != 0:
+            if probe.connect_ex(("localhost", port)) != 0:
                 continue
-            probe.sendall(json.dumps({"type": "instance_info"}).encode('utf-8'))
-            reply = json.loads(probe.recv(65536).decode('utf-8'))
+            probe.sendall(json.dumps({"type": "instance_info"}).encode("utf-8"))
+            reply = json.loads(probe.recv(65536).decode("utf-8"))
             result = reply.get("result") or {}
-            found.append({
-                "port": port,
-                "pid": result.get("pid"),
-                "objects": result.get("objects", []),
-            })
+            found.append(
+                {
+                    "port": port,
+                    "pid": result.get("pid"),
+                    "objects": result.get("objects", []),
+                }
+            )
         except Exception as e:  # noqa: BLE001 - one bad instance must not stop the scan
             logger.info(f"Instance probe failed on {port}: {e}")
             found.append({"port": port, "pid": None, "objects": []})
@@ -948,10 +994,10 @@ def discover_instances() -> list[Dict[str, Any]]:
     return found
 
 
-_connections: Dict[int, PyMOLConnection] = {}
+_connections: dict[int, PyMOLConnection] = {}
 
 
-def get_pymol_connection(port: Optional[int] = None) -> PyMOLConnection:
+def get_pymol_connection(port: int | None = None) -> PyMOLConnection:
     """Return a live connection to the requested PyMOL, or the obvious one.
 
     With no port: use the only running instance. If several are running the
@@ -994,9 +1040,11 @@ def get_pymol_connection(port: Optional[int] = None) -> PyMOLConnection:
     _connections[port] = conn
     return conn
 
+
 ##############################################################################
 # PARSING USER INPUT TO STRUCTURED COMMANDS
 ##############################################################################
+
 
 def parse_pymol_input(input_text: str) -> ParseResult:
     """
@@ -1010,7 +1058,7 @@ def parse_pymol_input(input_text: str) -> ParseResult:
         match = pattern.match(text_stripped)
         if match:
             groups = match.groups()
-            param_values: Dict[str, Any] = {}
+            param_values: dict[str, Any] = {}
             for i, param_def in enumerate(cmd_info.parameters):
                 value = None
                 if i < len(groups) and groups[i] is not None:
@@ -1038,7 +1086,8 @@ def parse_pymol_input(input_text: str) -> ParseResult:
         "to see the available ones."
     )
 
-def analyze_pymol_output(output_text: str) -> Optional[str]:
+
+def analyze_pymol_output(output_text: str) -> str | None:
     """
     Attempts to map known error patterns in the PyMOL output to a user-friendly error.
     Returns None if no known error patterns are matched.
@@ -1049,9 +1098,11 @@ def analyze_pymol_output(output_text: str) -> Optional[str]:
                 return f"{error_label} detected: {p}"
     return None
 
+
 ##############################################################################
 # MCP SERVER SETUP
 ##############################################################################
+
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
@@ -1078,6 +1129,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
         _connections.clear()
         logger.info("PyMOL MCP server shut down.")
 
+
 SERVER_INSTRUCTIONS = """\
 PyMOL integration with structured command dispatch (no arbitrary code execution).
 
@@ -1099,17 +1151,18 @@ Load the `pymol-mcp` skill if it is available. It covers the table's gaps (no
 `bg_color`, no `iterate`), selection idioms, how to enumerate chains, and the
 render-then-look loop for confirming a change actually landed."""
 
-mcp = FastMCP("PyMOLMCPServer",
-              instructions=SERVER_INSTRUCTIONS,
-              lifespan=server_lifespan)
+mcp = FastMCP(
+    "PyMOLMCPServer", instructions=SERVER_INSTRUCTIONS, lifespan=server_lifespan
+)
 
 ##############################################################################
 # MCP TOOL: parse_and_execute
 ##############################################################################
 
+
 @mcp.tool()
 def parse_and_execute(
-    ctx: Context, user_input: str, instance: Optional[int] = None
+    ctx: Context, user_input: str, instance: int | None = None
 ) -> str:
     """
     Executes a single PyMOL command given in literal PyMOL syntax.
@@ -1194,8 +1247,11 @@ def parse_and_execute(
         if resp.status == "success":
             res = resp.result
             out = (
-                res.get("output", "") if isinstance(res, dict)
-                else str(res) if res else ""
+                res.get("output", "")
+                if isinstance(res, dict)
+                else str(res)
+                if res
+                else ""
             )
             check_err = analyze_pymol_output(out)
             if check_err:
@@ -1213,9 +1269,11 @@ def parse_and_execute(
     except Exception as e:
         return f"Execution error: {e}"
 
+
 ##############################################################################
 # MCP TOOL: list_commands
 ##############################################################################
+
 
 def _describe_command(name: str, cmd: CommandDef) -> str:
     """Renders one command's full detail from its definition."""
@@ -1296,7 +1354,8 @@ def list_commands(ctx: Context, filter: str = "") -> str:
 
     needle = filter.strip().lower()
     matches = {
-        name: cmd for name, cmd in sorted(PYMOL_COMMANDS.items())
+        name: cmd
+        for name, cmd in sorted(PYMOL_COMMANDS.items())
         if needle in name.lower() or needle in cmd.description.lower()
     }
     if not matches:
@@ -1306,12 +1365,15 @@ def list_commands(ctx: Context, filter: str = "") -> str:
         )
     return "\n\n".join(_describe_command(n, c) for n, c in matches.items())
 
+
 ##############################################################################
 # ENTRY POINT
 ##############################################################################
 
+
 def main() -> None:
     mcp.run()
+
 
 if __name__ == "__main__":
     main()

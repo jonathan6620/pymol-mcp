@@ -74,6 +74,27 @@ for pattern in [
 That covers Windows too. `make install PYMOL=/full/path/to/pymol` takes the same
 path if the user needs to reinstall the plugin against it.
 
+### When macOS launches PyMOL but shows no window
+
+The Conda PyMOL launcher may run as a Python process without macOS bringing its
+window to the foreground. Do not repeatedly relaunch it. First find the live
+process outside a restricted sandbox:
+
+```bash
+ps ax -o pid=,comm=,command= | rg -i 'pymol|python.*pymol'
+```
+
+If the command line shows PyMOL and the requested structure, activate that PID:
+
+```bash
+osascript -e 'tell application "System Events" to set frontmost of first process whose unix id is 12345 to true'
+```
+
+Replace `12345` with the actual PID. This can prompt for macOS Automation or
+Accessibility permission. If no PyMOL process exists, run the executable in the
+foreground once with output visible to distinguish an immediate startup error
+from a running window that merely was not activated.
+
 ### Wait for the listener, do not guess
 
 `~/.pymolrc.py` sleeps 3 seconds before starting the listener, on top of PyMOL's
