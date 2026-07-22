@@ -9,7 +9,7 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from models import (
+from pymol_mcp.models import (
     CommandDef,
     ErrorCategory,
     ParameterDef,

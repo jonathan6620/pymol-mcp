@@ -1,0 +1,42 @@
+"""Shared test setup.
+
+pytest imports conftest before any test module, which is what lets the MCP
+stub be installed before anything imports the server.
+"""
+
+import importlib.util
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_PATH = REPO_ROOT / "pymol-mcp-socket-plugin" / "__init__.py"
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+
+# FastMCP's initialisation fails outside a real MCP runtime, so stub the
+# framework. TestServerModuleIntegrity checks the real import in a subprocess,
+# where this stub is not in effect.
+for _name in ("mcp", "mcp.server", "mcp.server.fastmcp"):
+    sys.modules[_name] = MagicMock()
+
+
+def load_plugin(name="pymol_plugin"):
+    """Import the PyMOL plugin from its path, the way PyMOL itself does.
+
+    Each call returns an independent module object. Tests that depend on
+    import-time state, such as the PYMOL_MCP_HISTORY setting, need their own.
+    """
+    spec = importlib.util.spec_from_file_location(name, PLUGIN_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_script(stem):
+    """Import one of the install scripts from scripts/ without running main()."""
+    spec = importlib.util.spec_from_file_location(
+        f"script_{stem}", SCRIPTS_DIR / f"{stem}.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

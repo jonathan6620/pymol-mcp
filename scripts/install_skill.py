@@ -23,7 +23,7 @@ COPY_IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".DS_Store", "*.pyc"
 
 def source_dir():
     """Absolute path to the skill in this checkout."""
-    repo = os.path.dirname(os.path.abspath(__file__))
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     source = os.path.join(repo, "skills", SKILL_NAME)
     if not os.path.isfile(os.path.join(source, "SKILL.md")):
         sys.exit(f"error: no SKILL.md found at {source}")

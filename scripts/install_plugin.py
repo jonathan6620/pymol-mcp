@@ -32,7 +32,8 @@ def repo_plugin_dir():
     if not script:
         sys.exit("error: cannot determine this script's location")
 
-    source = os.path.join(os.path.dirname(os.path.abspath(script)), PLUGIN_DIRNAME)
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(script)))
+    source = os.path.join(repo, PLUGIN_DIRNAME)
     if not os.path.isdir(source):
         sys.exit(f"error: plugin source not found at {source}")
     return source
@@ -121,4 +122,8 @@ def main():
     print("Restart PyMOL if it is already running.")
 
 
-main()
+# Not guarded by `__name__ == "__main__"`: `pymol -cq script.py` executes this
+# file without setting __name__, so that guard would never fire. The env var is
+# a seam for the tests, which import this module for its helpers.
+if not os.environ.get("PYMOL_MCP_INSTALLER_NO_RUN"):
+    main()

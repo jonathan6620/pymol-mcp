@@ -29,7 +29,7 @@ For Claude Code, with [uv](#step-1-install-the-uv-package-manager), *PyMOL* and 
 git clone https://github.com/jonathan6620/pymol-mcp
 cd pymol-mcp
 uv sync
-claude mcp add pymol -s user -- uv --directory $(pwd) run --quiet pymol_mcp_server.py
+claude mcp add pymol -s user -- uv --directory $(pwd) run pymol-mcp
 make install
 ```
 
@@ -95,8 +95,7 @@ This can use either the Desktop App or Claude Code.
         "--directory",
         "[Full path to the cloned pymol-mcp repo]",
         "run",
-        "--quiet",
-        "pymol_mcp_server.py"
+        "pymol-mcp"
       ]
     }
   }
@@ -114,8 +113,7 @@ For example:
         "--directory",
         "/Users/username/pymol-mcp",
         "run",
-        "--quiet",
-        "pymol_mcp_server.py"
+        "pymol-mcp"
       ]
     }
   }
@@ -132,14 +130,14 @@ For example:
 From the cloned repository directory, add the PyMOL MCP server using the `claude` CLI:
 
 ```bash
-claude mcp add pymol -s user -- uv --directory $(pwd) run --quiet pymol_mcp_server.py
+claude mcp add pymol -s user -- uv --directory $(pwd) run pymol-mcp
 ```
 
 `$(pwd)` expands to the repo you're standing in, so run this from the `pymol-mcp`
 directory you cloned in Step 2. From anywhere else, pass the full path instead:
 
 ```bash
-claude mcp add pymol -s user -- uv --directory /path/to/pymol-mcp run --quiet pymol_mcp_server.py
+claude mcp add pymol -s user -- uv --directory /path/to/pymol-mcp run pymol-mcp
 ```
 
 This saves the configuration to `~/.claude.json`. You can verify it was added with:
@@ -155,7 +153,7 @@ claude mcp list
 The MCP server communicates with PyMOL through a socket connection on port 9876. Install the socket listener plugin from the repository you cloned in Step 2:
 
 ```bash
-pymol -cq install_plugin.py
+pymol -cq scripts/install_plugin.py
 ```
 
 Restart PyMOL afterwards, so it picks up the new plugin.
@@ -184,7 +182,7 @@ def _auto_start_mcp_socket():
     try:
         plugin = importlib.import_module(PLUGIN_MODULE)
     except ImportError:
-        print("MCP socket plugin not installed -- run: pymol -cq install_plugin.py")
+        print("MCP socket plugin not installed -- run: pymol -cq scripts/install_plugin.py")
         return
     try:
         if plugin.start_socket_server(PORT):
@@ -273,7 +271,7 @@ to disable. The variable is read from the environment PyMOL was launched from.
 - **Connection issues**: Make sure the PyMOL plugin is listening before attempting to connect from Claude
 - **Command errors**: Check the PyMOL output window for any error messages
 - **`MCP socket plugin not installed`** on PyMOL startup, run
-  `pymol -cq install_plugin.py`
+  `pymol -cq scripts/install_plugin.py`
 - **Dialog says "Not listening" while the port is in use**: your `~/.pymolrc.py`
   loads the plugin by file path, giving the dialog and the listener separate
   copies of the module. Use the snippet in
@@ -306,6 +304,15 @@ to disable. The variable is read from the environment PyMOL was launched from.
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+```
+src/pymol_mcp/         MCP server and models; entry point `pymol-mcp`
+pymol-mcp-socket-plugin/   PyMOL plugin (the directory name is the module
+                           name PyMOL imports, so it cannot change)
+scripts/               install_plugin, install_pymolrc, install_skill
+skills/pymol-mcp/      Claude Code skill
+tests/                 pytest suite; conftest.py stubs the MCP framework
+```
+
 Run the test suite and linters with uv:
 
 ```bash
@@ -317,6 +324,7 @@ Or Make:
 
 ```bash
 make test
+make lint
 ```
 
 ## Credits

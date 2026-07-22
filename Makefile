@@ -61,13 +61,13 @@ install-plugin:
 	  echo "the path an alias points at."; \
 	  exit 1; \
 	fi
-	$(PYMOL) -cq install_plugin.py
+	$(PYMOL) -cq scripts/install_plugin.py
 
 install-pymolrc:
-	uv run python install_pymolrc.py $(if $(FORCE),--force,)
+	uv run python scripts/install_pymolrc.py $(if $(FORCE),--force,)
 
 install-skill:
-	uv run python install_skill.py
+	uv run python scripts/install_skill.py
 
 test:
 	uv run pytest
