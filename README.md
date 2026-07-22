@@ -233,6 +233,19 @@ Here are some examples of what you can ask Claude to do:
 - "Calculate the distance between these two residues"
 - "Save this view as a high-resolution image"
 
+### The PyMOL skill
+
+`make install` also installs a Claude Code skill from `skills/pymol-mcp/`, which
+gives Claude higher-level guidance on driving this MCP server. To install it on
+its own:
+
+```bash
+make install-skill
+```
+
+It goes into `~/.claude/skills/`, so it applies in any project directory. Start
+a new Claude Code session afterwards.
+
 ## Troubleshooting
 
 - **Connection issues**: Make sure the PyMOL plugin is listening before attempting to connect from Claude

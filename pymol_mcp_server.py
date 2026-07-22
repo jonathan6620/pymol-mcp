@@ -991,7 +991,11 @@ Three rules cover most mistakes:
      "Load PDB 1UBQ" means `fetch 1ubq`.
 
 Call `list_commands` for the full command table with exact patterns. Prefer it
-over guessing: unrecognized input is rejected, not interpreted."""
+over guessing: unrecognized input is rejected, not interpreted.
+
+Load the `pymol-mcp` skill if it is available. It covers the table's gaps (no
+`bg_color`, no `iterate`), selection idioms, how to enumerate chains, and the
+render-then-look loop for confirming a change actually landed."""
 
 mcp = FastMCP("PyMOLMCPServer",
               instructions=SERVER_INSTRUCTIONS,

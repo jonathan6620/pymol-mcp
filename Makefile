@@ -26,13 +26,14 @@ endif
 
 FORCE ?=
 
-.PHONY: help install install-plugin install-pymolrc test lint
+.PHONY: help install install-plugin install-pymolrc install-skill test lint
 
 help:
 	@echo "Targets:"
-	@echo "  install           Install the PyMOL plugin and the pymolrc auto-start"
+	@echo "  install           Install the plugin, the pymolrc auto-start, and the skill"
 	@echo "  install-plugin    Symlink the socket plugin into PyMOL's plugin directory"
 	@echo "  install-pymolrc   Add the auto-start block to ~/.pymolrc.py"
+	@echo "  install-skill     Symlink the PyMOL usage skill into ~/.claude/skills"
 	@echo "  test              Run the test suite"
 	@echo "  lint              Run ruff"
 	@echo ""
@@ -42,7 +43,7 @@ help:
 	@echo ""
 	@echo "Detected PYMOL: $(if $(PYMOL),$(PYMOL),<none - pass PYMOL=/path/to/pymol>)"
 
-install: install-plugin install-pymolrc
+install: install-plugin install-pymolrc install-skill
 	@echo ""
 	@echo "Done. Restart PyMOL; it will report the listener on port 9876."
 
@@ -64,6 +65,9 @@ install-plugin:
 
 install-pymolrc:
 	uv run python install_pymolrc.py $(if $(FORCE),--force,)
+
+install-skill:
+	uv run python install_skill.py
 
 test:
 	uv run pytest
