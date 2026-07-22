@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-import re
-import os
-import socket
 import json
 import logging
+import os
+import re
+import socket
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any, AsyncIterator
+from typing import Any, AsyncIterator, Dict, Optional
 
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp import Context, FastMCP
 
 from models import (
-    ParameterDef,
     CommandDef,
     ErrorCategory,
+    ParameterDef,
+    ParseResult,
     SocketRequest,
     SocketResponse,
-    ParseResult,
 )
 
 ##############################################################################
@@ -64,7 +64,10 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         check_selection=True,
     ),
     "as": CommandDef(
-        description="Shows one representation while hiding all others for the specified selection",
+        description=(
+            "Shows one representation while hiding all others for the "
+            "specified selection"
+        ),
         pattern=r"^as\s+([\w.]+)(?:\s*,\s*(.+))?$",
         parameters=[
             ParameterDef(name="representation", required=True),
@@ -87,7 +90,8 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         pattern=r"^cartoon\s+([\w.]+)(?:\s*,\s*(.+))?$",
         parameters=[
             ParameterDef(name="type", required=True, options=[
-                "automatic", "loop", "rectangle", "oval", "tube", "arrow", "dumbbell", "putty"
+                "automatic", "loop", "rectangle", "oval", "tube", "arrow",
+                "dumbbell", "putty"
             ]),
             ParameterDef(name="selection", required=False, default="all"),
         ],
@@ -202,7 +206,9 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         description="Adjusts the clipping planes",
         pattern=r"^clip\s+([\w.]+)(?:\s*,\s*(.+))?$",
         parameters=[
-            ParameterDef(name="mode", required=True, options=["near", "far", "slab", "atoms", "near_slab", "far_slab"]),
+            ParameterDef(name="mode", required=True, options=[
+                "near", "far", "slab", "atoms", "near_slab", "far_slab"
+            ]),
             ParameterDef(name="distance", required=False, default="1"),
         ],
         check_selection=False,
@@ -341,7 +347,10 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
 
     # UTILITY AND MODIFICATION
     "alter": CommandDef(
-        description="Alters atomic properties in a selection (expression is evaluated per-atom by PyMOL)",
+        description=(
+            "Alters atomic properties in a selection "
+            "(expression is evaluated per-atom by PyMOL)"
+        ),
         pattern=r"^alter\s+([^,]+)(?:\s*,\s*(.+))?$",
         parameters=[
             ParameterDef(name="selection", required=True),
@@ -350,7 +359,10 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         check_selection=True,
     ),
     "alter_state": CommandDef(
-        description="Alters atomic coordinates in a state (expression is evaluated per-atom by PyMOL)",
+        description=(
+            "Alters atomic coordinates in a state "
+            "(expression is evaluated per-atom by PyMOL)"
+        ),
         pattern=r"^alter_state\s+([^,]+)(?:\s*,\s*([^,]+))?(?:\s*,\s*(.+))?$",
         parameters=[
             ParameterDef(name="state", required=True),
@@ -515,7 +527,10 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         check_selection=True,
     ),
     "color_ss": CommandDef(
-        description="Colors by secondary structure: helices red, sheets yellow, loops green",
+        description=(
+            "Colors by secondary structure: helices red, sheets yellow, "
+            "loops green"
+        ),
         pattern=r"^color_ss(?:\s+(.+))?$",
         parameters=[
             ParameterDef(name="selection", required=False, default="all"),
@@ -894,10 +909,10 @@ def get_pymol_connection() -> PyMOLConnection:
         try:
             _global_connection.send_command("refresh", {})
             return _global_connection
-        except:
+        except Exception:
             try:
                 _global_connection.disconnect()
-            except:
+            except Exception:
                 pass
             _global_connection = None
     if _global_connection is None:
@@ -929,11 +944,17 @@ def parse_pymol_input(input_text: str) -> ParseResult:
                 if i < len(groups) and groups[i] is not None:
                     value = groups[i].strip()
                 elif param_def.required and param_def.default is None:
-                    raise ValueError(f"Missing required parameter '{param_def.name}' for command {cmd_name}")
+                    raise ValueError(
+                        f"Missing required parameter '{param_def.name}' "
+                        f"for command {cmd_name}"
+                    )
                 elif value is None and param_def.default is not None:
                     value = param_def.default
                 if param_def.options and value and value not in param_def.options:
-                    raise ValueError(f"Parameter '{param_def.name}' must be one of {param_def.options}")
+                    raise ValueError(
+                        f"Parameter '{param_def.name}' must be one of "
+                        f"{param_def.options}"
+                    )
                 if value is not None:
                     param_values[param_def.name] = value
             return ParseResult(command=cmd_name, args=param_values)
@@ -1067,7 +1088,10 @@ def parse_and_execute(ctx: Context, user_input: str) -> str:
                 ss_sel = f"(ss {ss}) and ({sel})" if sel != "all" else f"ss {ss}"
                 resp = conn.send_command("color", {"color": color, "selection": ss_sel})
                 results.append(f"{ss}: {resp.get('status', 'error')}")
-            return f"Colored by secondary structure ({sel}): helices=red, sheets=yellow, loops=green"
+            return (
+                f"Colored by secondary structure ({sel}): "
+                "helices=red, sheets=yellow, loops=green"
+            )
         except Exception as e:
             return f"Execution error: {e}"
 
@@ -1077,10 +1101,16 @@ def parse_and_execute(ctx: Context, user_input: str) -> str:
         resp = SocketResponse(**response)
         if resp.status == "success":
             res = resp.result
-            out = res.get("output", "") if isinstance(res, dict) else str(res) if res else ""
+            out = (
+                res.get("output", "") if isinstance(res, dict)
+                else str(res) if res else ""
+            )
             check_err = analyze_pymol_output(out)
             if check_err:
-                return f"PyMOL command completed but possible error:\n{check_err}\nRaw Output:\n{out}"
+                return (
+                    "PyMOL command completed but possible error:\n"
+                    f"{check_err}\nRaw Output:\n{out}"
+                )
             return out or "Command executed (no output)."
         else:
             msg = resp.message or "Unknown error"

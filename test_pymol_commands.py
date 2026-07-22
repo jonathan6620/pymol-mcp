@@ -15,6 +15,7 @@ import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
+
 import pytest
 
 # Mock the MCP framework before importing the server module
@@ -29,21 +30,20 @@ PLUGIN_PATH = REPO_ROOT / "pymol-mcp-socket-plugin" / "__init__.py"
 sys.path.insert(0, str(REPO_ROOT))
 
 from models import (
-    ParameterDef,
     CommandDef,
     ErrorCategory,
+    ParameterDef,
+    ParseResult,
     SocketRequest,
     SocketResponse,
-    ParseResult,
 )
 from pymol_mcp_server import (
-    PYMOL_COMMANDS,
     ERROR_PATTERNS,
+    PYMOL_COMMANDS,
     PyMOLConnection,
-    parse_pymol_input,
     analyze_pymol_output,
+    parse_pymol_input,
 )
-
 
 # ============================================================================
 # 1. STRUCTURAL INTEGRITY OF COMMAND DEFINITIONS
@@ -65,7 +65,8 @@ class TestCommandDefinitionStructure:
 
     def test_descriptions_are_nonempty_strings(self):
         for cmd_name, cmd_info in PYMOL_COMMANDS.items():
-            assert isinstance(cmd_info.description, str) and len(cmd_info.description) > 0, (
+            desc = cmd_info.description
+            assert isinstance(desc, str) and len(desc) > 0, (
                 f"Command '{cmd_name}' has empty or non-string description"
             )
 
@@ -106,7 +107,8 @@ class TestCommandDefinitionStructure:
                     f"Command '{cmd_name}' param[{i}] has no name"
                 )
                 assert isinstance(param.required, bool), (
-                    f"Command '{cmd_name}' param[{i}] ('{param.name}') required is not bool"
+                    f"Command '{cmd_name}' param[{i}] ('{param.name}') "
+                    "required is not bool"
                 )
 
     def test_optional_params_have_default_or_are_truly_optional(self):
@@ -168,9 +170,11 @@ class TestPatternMatchingValid:
 
     @pytest.mark.parametrize("input_str,expected_cmd,expected_args", [
         ("show cartoon", "show", {"representation": "cartoon", "selection": "all"}),
-        ("show sticks, chain A", "show", {"representation": "sticks", "selection": "chain A"}),
+        ("show sticks, chain A", "show",
+         {"representation": "sticks", "selection": "chain A"}),
         ("show lines", "show", {"representation": "lines", "selection": "all"}),
-        ("show surface, resi 50-100", "show", {"representation": "surface", "selection": "resi 50-100"}),
+        ("show surface, resi 50-100", "show",
+         {"representation": "surface", "selection": "resi 50-100"}),
     ])
     def test_show(self, input_str, expected_cmd, expected_args):
         cmd, args = parse_pymol_input(input_str)
@@ -178,8 +182,10 @@ class TestPatternMatchingValid:
         assert args == expected_args
 
     @pytest.mark.parametrize("input_str,expected_cmd,expected_args", [
-        ("hide everything", "hide", {"representation": "everything", "selection": "all"}),
-        ("hide cartoon, chain B", "hide", {"representation": "cartoon", "selection": "chain B"}),
+        ("hide everything", "hide",
+         {"representation": "everything", "selection": "all"}),
+        ("hide cartoon, chain B", "hide",
+         {"representation": "cartoon", "selection": "chain B"}),
     ])
     def test_hide(self, input_str, expected_cmd, expected_args):
         cmd, args = parse_pymol_input(input_str)
@@ -206,9 +212,11 @@ class TestPatternMatchingValid:
         assert args == expected_args
 
     @pytest.mark.parametrize("input_str,expected_args", [
-        ("set cartoon_oval_length, 1.5", {"setting": "cartoon_oval_length", "value": "1.5"}),
+        ("set cartoon_oval_length, 1.5",
+         {"setting": "cartoon_oval_length", "value": "1.5"}),
         ("set bg_rgb, white", {"setting": "bg_rgb", "value": "white"}),
-        ("set stick_radius, 0.2, chain A", {"setting": "stick_radius", "value": "0.2", "selection": "chain A"}),
+        ("set stick_radius, 0.2, chain A",
+         {"setting": "stick_radius", "value": "0.2", "selection": "chain A"}),
     ])
     def test_set(self, input_str, expected_args):
         cmd, args = parse_pymol_input(input_str)
@@ -228,7 +236,9 @@ class TestPatternMatchingValid:
     def test_spectrum(self):
         cmd, args = parse_pymol_input("spectrum count, rainbow, chain A")
         assert cmd == "spectrum"
-        assert args == {"expression": "count", "palette": "rainbow", "selection": "chain A"}
+        assert args == {
+            "expression": "count", "palette": "rainbow", "selection": "chain A"
+        }
 
     def test_spectrum_minimal(self):
         cmd, args = parse_pymol_input("spectrum b")
@@ -1063,7 +1073,6 @@ class TestServerModuleIntegrity:
 
     def test_server_module_imports_without_mock(self):
         """The server module should import cleanly with the real mcp package."""
-        import importlib
         import subprocess
         result = subprocess.run(
             [
@@ -1076,7 +1085,8 @@ class TestServerModuleIntegrity:
             cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, (
-            f"Server module failed to import:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            f"Server module failed to import:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         assert "imports_ok" in result.stdout
 
@@ -1096,7 +1106,8 @@ class TestServerModuleIntegrity:
             cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, (
-            f"FastMCP instantiation failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            f"FastMCP instantiation failed:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         assert "name=PyMOLMCPServer" in result.stdout
 
@@ -1121,7 +1132,8 @@ class TestServerModuleIntegrity:
         assert result.returncode == 0, f"Failed: {result.stderr}"
         assert "True" in result.stdout, (
             "FastMCP.__init__ unexpectedly accepts 'description'. "
-            "If the mcp package restored this kwarg, update pymol_mcp_server.py accordingly."
+            "If the mcp package restored this kwarg, update "
+            "pymol_mcp_server.py accordingly."
         )
 
     def test_fastmcp_accepts_instructions_kwarg(self):
@@ -1244,7 +1256,7 @@ class TestPydanticModels:
         with pytest.raises(Exception, match="[Ii]nvalid regex"):
             CommandDef(
                 description="Bad",
-                pattern=r"^test[[$",
+                pattern=r"^test(",
                 parameters=[],
                 check_selection=False,
             )
@@ -1309,7 +1321,7 @@ class TestPydanticModels:
 
     def test_error_category_invalid_regex_rejected(self):
         with pytest.raises(Exception, match="[Ii]nvalid regex"):
-            ErrorCategory(label="BAD", patterns=[r"[[$"])
+            ErrorCategory(label="BAD", patterns=[r"("])
 
     # --- ParseResult ---
 

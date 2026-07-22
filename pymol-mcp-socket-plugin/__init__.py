@@ -7,12 +7,11 @@ commands received as structured JSON. No arbitrary code execution (exec) is used
 Based on the concept of the "Rendering Plugin" from Michael Lerner.
 '''
 
-from __future__ import absolute_import
-from __future__ import print_function
+from __future__ import absolute_import, print_function
 
+import json
 import os
 import socket
-import json
 import threading
 import traceback
 
@@ -85,7 +84,10 @@ def execute_structured_command(command_name, args):
         elif result is not None:
             return {"executed": True, "output": str(result)}
         else:
-            return {"executed": True, "output": "Command executed successfully (no output)"}
+            return {
+                "executed": True,
+                "output": "Command executed successfully (no output)",
+            }
     except Exception as e:
         error_msg = f"Error executing PyMOL command '{command_name}': {str(e)}"
         _log(error_msg)
@@ -143,16 +145,22 @@ def build_command_dispatcher(cmd):
         return "Command executed"
 
     def _show(args):
-        return cmd.show(args.get("representation", "lines"), args.get("selection", "all"))
+        return cmd.show(
+            args.get("representation", "lines"), args.get("selection", "all")
+        )
 
     def _hide(args):
-        return cmd.hide(args.get("representation", "lines"), args.get("selection", "all"))
+        return cmd.hide(
+            args.get("representation", "lines"), args.get("selection", "all")
+        )
 
     def _color(args):
         return cmd.color(args.get("color", "white"), args.get("selection", "all"))
 
     def _as(args):
-        return cmd.show_as(args.get("representation", "cartoon"), args.get("selection", "all"))
+        return cmd.show_as(
+            args.get("representation", "cartoon"), args.get("selection", "all")
+        )
 
     def _set(args):
         selection = args.get("selection")
@@ -278,7 +286,9 @@ def build_command_dispatcher(cmd):
             source_state = int(source_state)
         except (ValueError, TypeError):
             source_state = 1
-        return cmd.create(args.get("name", "obj"), args.get("selection", "all"), source_state)
+        return cmd.create(
+            args.get("name", "obj"), args.get("selection", "all"), source_state
+        )
 
     def _extract(args):
         return cmd.extract(args.get("name", "obj"), args.get("selection", "all"))
@@ -310,7 +320,9 @@ def build_command_dispatcher(cmd):
             state = int(state)
         except (ValueError, TypeError):
             state = 1
-        return cmd.alter_state(state, args.get("selection", "all"), args.get("expression", ""))
+        return cmd.alter_state(
+            state, args.get("selection", "all"), args.get("expression", "")
+        )
 
     def _h_add(args):
         return cmd.h_add(args.get("selection", "all"))
@@ -652,7 +664,10 @@ class SocketServer:
 
                                 result = self._handle_command(command)
 
-                                if isinstance(result, dict) and result.get("executed") is False:
+                                failed = isinstance(result, dict) and (
+                                    result.get("executed") is False
+                                )
+                                if failed:
                                     response = json.dumps({
                                         "status": "error",
                                         "message": result.get("error", "Unknown error")
@@ -660,7 +675,7 @@ class SocketServer:
                                 else:
                                     response = json.dumps({
                                         "status": "success",
-                                        "result": result if result else "Command executed"
+                                        "result": result or "Command executed",
                                     })
                                 self.client.sendall(response.encode('utf-8'))
                             except json.JSONDecodeError:
