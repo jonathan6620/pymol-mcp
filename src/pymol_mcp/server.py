@@ -63,6 +63,14 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         ],
         check_selection=True,
     ),
+    "bg_color": CommandDef(
+        description="Sets the background color",
+        pattern=r"^bg_color(?:\s+([\w.]+))?$",
+        parameters=[
+            ParameterDef(name="color", required=False, default="black"),
+        ],
+        check_selection=False,
+    ),
     "as": CommandDef(
         description=(
             "Shows one representation while hiding all others for the "
@@ -537,14 +545,6 @@ PYMOL_COMMANDS: Dict[str, CommandDef] = {
         ],
         check_selection=True,
         composite=True,
-    ),
-    "util.color_by_element": CommandDef(
-        description="Colors atoms by their element",
-        pattern=r"^util\.color_by_element(?:\s+(.+))?$",
-        parameters=[
-            ParameterDef(name="selection", required=False, default="all"),
-        ],
-        check_selection=True,
     ),
 
     # MOLECULAR DYNAMICS AND ANALYSIS

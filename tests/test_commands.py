@@ -413,7 +413,6 @@ class TestPatternMatchingValid:
         ("util.cbak", "util.cbak"),
         ("util.chainbow", "util.chainbow"),
         ("util.rainbow", "util.rainbow"),
-        ("util.color_by_element", "util.color_by_element"),
     ])
     def test_util_commands(self, input_str, expected_cmd):
         cmd, args = parse_pymol_input(input_str)
@@ -815,18 +814,24 @@ class TestRealWorldCommands:
             assert cmd is not None
 
     def test_publication_rendering(self):
-        cmds = [
+        for c in [
             "set ray_shadows, off",
             "set antialias, 2",
             "set ray_trace_mode, 1",
-            "bg_color white",  # This should FAIL (not a recognized command)
-        ]
-        for c in cmds[:-1]:
+            "bg_color white",
+        ]:
             cmd, args = parse_pymol_input(c)
-            assert cmd is not None
+            assert cmd is not None, f"{c} should parse"
 
-        with pytest.raises(ValueError):
-            parse_pymol_input(cmds[-1])
+    def test_bg_color(self):
+        """Was missing from the table, forcing callers onto `set bg_rgb`."""
+        cmd, args = parse_pymol_input("bg_color white")
+        assert cmd == "bg_color"
+        assert args == {"color": "white"}
+
+    def test_bg_color_defaults_to_black(self):
+        cmd, args = parse_pymol_input("bg_color")
+        assert (cmd, args) == ("bg_color", {"color": "black"})
 
     def test_bfactor_spectrum(self):
         cmds = [

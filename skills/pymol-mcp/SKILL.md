@@ -112,9 +112,10 @@ patterns. Anything unrecognised is rejected, not interpreted.
 
 | You want | Table has | Use instead |
 |---|---|---|
-| `bg_color white` | no `bg_color` | `set bg_rgb, white` |
 | `iterate` / `print` | neither | `select tmp, <sel>`, which returns an atom count |
 | RNA vs DNA selector | neither | residue names, see below |
+
+`bg_color white` works; it used to be missing and need `set bg_rgb, white`.
 
 `alter` and `alter_state` expressions are restricted to arithmetic over atom
 properties, because PyMOL evaluates them as Python. `b + 10`, `int(resi) + 100`

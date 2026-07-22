@@ -389,6 +389,9 @@ def build_command_dispatcher(cmd):
     def _color(args):
         return cmd.color(args.get("color", "white"), args.get("selection", "all"))
 
+    def _bg_color(args):
+        return cmd.bg_color(args.get("color", "black"))
+
     def _as(args):
         return cmd.show_as(
             args.get("representation", "cartoon"), args.get("selection", "all")
@@ -755,6 +758,7 @@ def build_command_dispatcher(cmd):
         "show": _show,
         "hide": _hide,
         "color": _color,
+        "bg_color": _bg_color,
         "as": _as,
         "set": _set,
         "cartoon": _cartoon,
@@ -824,7 +828,6 @@ def build_command_dispatcher(cmd):
         "util.cbc", "util.cbaw", "util.cbag", "util.cbac", "util.cbam",
         "util.cbay", "util.cbas", "util.cbab", "util.cbao", "util.cbap",
         "util.cbak", "util.chainbow", "util.rainbow",
-        "util.color_by_element",
     ]
     for util_cmd in util_commands:
         dispatcher[util_cmd] = lambda args, name=util_cmd: _util_command(name, args)
