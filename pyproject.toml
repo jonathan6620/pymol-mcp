@@ -1,7 +1,7 @@
 [project]
 name = "pymol-mcp"
 version = "0.1.0"
-description = "Control PyMOL from Claude via the Model Context Protocol (MCP)"
+description = "Control PyMOL from AI clients via the Model Context Protocol (MCP)"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [

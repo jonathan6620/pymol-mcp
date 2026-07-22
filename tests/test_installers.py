@@ -69,12 +69,19 @@ class TestInstallSkill:
         assert Path(dest) == home / ".claude" / "skills" / mod.SKILL_NAME
         assert (home / ".claude" / "skills").is_dir()
 
+        codex_dest = mod.codex_dest_dir()
+        assert Path(codex_dest) == home / ".agents" / "skills" / mod.SKILL_NAME
+        assert (home / ".agents" / "skills").is_dir()
+
     def test_installs_a_symlink_to_the_checkout(self, mod, home):
         mod.main()
         dest = home / ".claude" / "skills" / mod.SKILL_NAME
         assert dest.is_symlink()
         assert dest.resolve() == (REPO_ROOT / "skills" / mod.SKILL_NAME).resolve()
         assert (dest / "SKILL.md").is_file(), "skill must be readable through the link"
+        codex_dest = home / ".agents" / "skills" / mod.SKILL_NAME
+        assert codex_dest.is_symlink()
+        assert codex_dest.resolve() == (REPO_ROOT / "skills" / mod.SKILL_NAME).resolve()
 
     def test_rerun_is_idempotent(self, mod, home, capsys):
         mod.main()

@@ -1,15 +1,14 @@
-"""Install the PyMOL usage skill into Claude Code's user skill directory.
+"""Install the PyMOL usage skill for Claude Code and OpenAI Codex.
 
     uv run python install_skill.py
 
-Symlinks skills/pymol-mcp into ~/.claude/skills/ so `git pull` keeps it current,
-falling back to a copy where symlinks are unavailable (Windows without Developer
-Mode). Rerun after each pull in that case.
+Symlinks skills/pymol-mcp into both clients' user skill directories so `git
+pull` keeps it current, falling back to a copy where symlinks are unavailable
+(Windows without Developer Mode). Rerun after each pull in that case.
 
-User scope rather than this repo's .claude/skills/ on purpose: the MCP server is
-installed with `claude mcp add pymol -s user`, so PyMOL gets driven from whatever
-project directory the user's structures live in. A repo-scoped skill would only
-be discovered while working inside this checkout.
+User scope rather than a repo-local skill directory on purpose: PyMOL gets
+driven from whatever project directory holds the user's structures. A
+repo-scoped skill would only be discovered while working inside this checkout.
 """
 
 import os
@@ -37,6 +36,13 @@ def dest_dir():
     return os.path.join(parent, SKILL_NAME)
 
 
+def codex_dest_dir():
+    """~/.agents/skills/<name>, the user-level skill location used by Codex."""
+    parent = os.path.join(os.path.expanduser("~"), ".agents", "skills")
+    os.makedirs(parent, exist_ok=True)
+    return os.path.join(parent, SKILL_NAME)
+
+
 def clear(dest):
     """Remove a previous install, preserving anything hand-edited."""
     if os.path.islink(dest):
@@ -50,13 +56,11 @@ def clear(dest):
     return None
 
 
-def main():
-    source = source_dir()
-    dest = dest_dir()
-
+def install(source, dest):
+    """Install one client link/copy, returning whether anything changed."""
     if os.path.islink(dest) and os.path.realpath(dest) == os.path.realpath(source):
         print(f"Already linked: {dest} -> {source}")
-        return
+        return False
 
     saved = clear(dest)
     if saved:
@@ -70,8 +74,14 @@ def main():
         shutil.copytree(source, dest, ignore=COPY_IGNORE)
         print(f"Installed: {dest}\n  -> copy of {source} (symlinks unavailable)")
         print("Rerun this script after each `git pull`.")
+    return True
 
-    print("Start a new Claude Code session to pick it up.")
+
+def main():
+    source = source_dir()
+    install(source, dest_dir())
+    install(source, codex_dest_dir())
+    print("Start a new Claude Code or Codex session to pick it up.")
 
 
 if __name__ == "__main__":

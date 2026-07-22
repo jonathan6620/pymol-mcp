@@ -34,7 +34,7 @@ help:
 	@echo "  install           Install the plugin, the pymolrc auto-start, and the skill"
 	@echo "  install-plugin    Symlink the socket plugin into PyMOL's plugin directory"
 	@echo "  install-pymolrc   Add the auto-start block to ~/.pymolrc.py"
-	@echo "  install-skill     Symlink the PyMOL usage skill into ~/.claude/skills"
+	@echo "  install-skill     Install the usage skill for Claude Code and Codex"
 	@echo "  test              Run the test suite"
 	@echo "  test-integration  Run tests against real PyMOL processes (slow)"
 	@echo "  lint              Run ruff"

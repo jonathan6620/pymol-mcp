@@ -1,14 +1,14 @@
-# PyMOL-MCP: Integrating PyMOL with Claude AI
+# PyMOL-MCP: Control PyMOL with Claude or OpenAI Codex
 
-PyMOL-MCP connects PyMOL to Claude AI through the Model Context Protocol (MCP), enabling Claude to directly interact with and control PyMOL. This powerful integration allows for conversational structural biology, molecular visualization, and analysis through natural language.
-
-> Derived from [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp) by
-> [Vishnu Rajan Tejus](https://github.com/vrtejus). See [Credits](#credits).
+PyMOL-MCP connects PyMOL to AI clients through the Model Context Protocol
+(MCP), enabling Claude and OpenAI Codex to directly interact with and control
+PyMOL. It supports conversational structural biology, molecular visualization,
+and analysis through natural language.
 
 
 ## Features
 
-- **Two-way communication**: Connect Claude AI to PyMOL through a socket-based server
+- **Two-way communication**: Connect Claude or Codex to PyMOL through an MCP server
 - **Intelligent command parsing**: Natural language processing for PyMOL commands
 - **Molecular visualization control**: Manipulate representations, colors, and views
 - **Structural analysis**: Perform measurements, alignments, and other analyses
@@ -17,7 +17,7 @@ PyMOL-MCP connects PyMOL to Claude AI through the Model Context Protocol (MCP), 
 ## Prerequisites
 
 - PyMOL installed on your system
-- Claude Desktop or Claude Code
+- Claude Desktop, Claude Code, or OpenAI Codex
 - Git
 - Make, if you want to use the [Quick Start](#quick-start)
 
@@ -31,6 +31,12 @@ cd pymol-mcp
 uv sync
 claude mcp add pymol -s user -- uv --directory $(pwd) run pymol-mcp
 make install
+```
+
+For OpenAI Codex, replace the `claude mcp add` command with:
+
+```bash
+codex mcp add pymol -- uv --directory "$(pwd)" run pymol-mcp
 ```
 
 Restart PyMOL and start a new Claude Code session. On startup PyMOL prints
@@ -75,9 +81,9 @@ cd pymol-mcp
 uv sync
 ```
 
-### Step 3: Configure Claude
+### Step 3: Configure your MCP client
 
-This can use either the Desktop App or Claude Code.
+Use Claude Desktop, Claude Code, or OpenAI Codex.
 
 #### Option A: Claude Desktop
 
@@ -147,6 +153,26 @@ claude mcp list
 ```
 
 > **Note:** After adding the MCP server, you must restart your Claude Code session for the tools to become available.
+
+#### Option C: OpenAI Codex
+
+From the cloned repository directory, register the local stdio MCP server:
+
+```bash
+codex mcp add pymol -- uv --directory "$(pwd)" run pymol-mcp
+```
+
+Verify the configuration with `codex mcp list`. Codex stores MCP configuration
+in `~/.codex/config.toml`; the Codex CLI, IDE extension, and ChatGPT desktop app
+on the same Codex host share it. Restart the client after adding the server.
+
+The equivalent manual configuration is:
+
+```toml
+[mcp_servers.pymol]
+command = "uv"
+args = ["--directory", "/full/path/to/pymol-mcp", "run", "pymol-mcp"]
+```
 
 ### Step 4: Install the PyMOL Socket Plugin
 
@@ -238,16 +264,16 @@ correct one.
 
 ### The PyMOL skill
 
-`make install` also installs a Claude Code skill from `skills/pymol-mcp/`, which
-gives Claude higher-level guidance on driving this MCP server. To install it on
+`make install` also installs a skill from `skills/pymol-mcp/`, which gives
+Claude Code and Codex higher-level guidance on driving this MCP server. To install it on
 its own:
 
 ```bash
 make install-skill
 ```
 
-It goes into `~/.claude/skills/`, so it applies in any project directory. Start
-a new Claude Code session afterwards.
+It goes into both `~/.claude/skills/` and Codex's `~/.agents/skills/`, so it
+applies in any project directory. Start a new client session afterwards.
 
 ### Session history
 
@@ -344,12 +370,7 @@ make lint
 ## Credits
 
 Derived from [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp) by
-[Vishnu Rajan Tejus](https://github.com/vrtejus). The socket transport and the
-Qt dialog are largely unchanged from that project.
-
-This repository continues it independently rather than as a GitHub fork, so it
-can diverge freely. The full upstream commit history is preserved here; `git log`
-shows the original authorship. Changes since the fork point:
+[Vishnu Rajan Tejus](https://github.com/vrtejus).
 
 - Replaced `exec()` with an allowlisted command dispatcher
 - Added Pydantic models, type hints, and a test suite
