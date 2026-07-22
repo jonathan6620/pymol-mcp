@@ -35,7 +35,7 @@ TEST_PORTS = range(9930, 9934)
 # their own instances need a range of their own or discovery counts both sets.
 KILL_PORTS = range(9934, 9938)
 
-BOOTSTRAP = '''
+BOOTSTRAP = """
 import importlib.util, os, sys
 
 spec = importlib.util.spec_from_file_location("mcp_plugin", {plugin!r})
@@ -45,7 +45,7 @@ spec.loader.exec_module(plugin)
 plugin.PORT_RANGE = range({lo}, {hi})
 ok = plugin.start_socket_server()
 print("LISTENING" if ok else "BIND_FAILED", plugin.current_port, flush=True)
-'''
+"""
 
 
 def find_pymol():
@@ -68,9 +68,7 @@ def find_pymol():
 
 
 PYMOL = find_pymol()
-requires_pymol = pytest.mark.skipif(
-    PYMOL is None, reason="no PyMOL executable found"
-)
+requires_pymol = pytest.mark.skipif(PYMOL is None, reason="no PyMOL executable found")
 
 
 class Instance:
@@ -79,9 +77,7 @@ class Instance:
     def __init__(self, workdir, index, history_dir, ports=TEST_PORTS):
         script = workdir / f"boot{index}.py"
         script.write_text(
-            BOOTSTRAP.format(
-                plugin=str(PLUGIN_PATH), lo=ports.start, hi=ports.stop
-            )
+            BOOTSTRAP.format(plugin=str(PLUGIN_PATH), lo=ports.start, hi=ports.stop)
         )
         env = dict(os.environ, PYMOL_MCP_HISTORY=str(history_dir))
         self.log = open(workdir / f"boot{index}.out", "w+")
@@ -91,7 +87,9 @@ class Instance:
         # after printing LISTENING.
         self.proc = subprocess.Popen(
             [PYMOL, "-cqK", str(script)],
-            stdin=subprocess.PIPE, stdout=self.log, stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE,
+            stdout=self.log,
+            stderr=subprocess.STDOUT,
             env=env,
         )
         self.port = self._await_port(workdir / f"boot{index}.out")
@@ -118,13 +116,13 @@ class Instance:
             "source": source,
         }
         with socket.create_connection(("localhost", self.port), timeout=15) as sock:
-            sock.sendall(json.dumps(payload).encode())
-            return json.loads(sock.recv(65536).decode())
+            sock.sendall((json.dumps(payload) + "\n").encode())
+            return json.loads(sock.makefile().readline())
 
     def objects(self):
         with socket.create_connection(("localhost", self.port), timeout=15) as sock:
-            sock.sendall(json.dumps({"type": "instance_info"}).encode())
-            reply = json.loads(sock.recv(65536).decode())
+            sock.sendall((json.dumps({"type": "instance_info"}) + "\n").encode())
+            reply = json.loads(sock.makefile().readline())
         return reply["result"]["objects"]
 
     def stop(self):
@@ -319,7 +317,9 @@ class TestPortExhaustion:
         procs = [
             subprocess.Popen(
                 [PYMOL, "-cqK", str(script)],
-                stdout=log, stderr=subprocess.STDOUT, env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
             )
             for log in logs
         ]

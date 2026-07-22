@@ -56,6 +56,27 @@ class TestCommandHistory:
         # A command that failed would not replay, so it must not be in the script.
         assert "show cartoon" not in self._script(tmp_path)
 
+    def test_untrusted_source_is_logged_but_not_replayable(
+        self, tmp_path, monkeypatch
+    ):
+        plugin = self._load_plugin(monkeypatch, tmp_path)
+        injected = "refresh; run /tmp/untrusted.pml"
+        plugin._record_history("refresh", {}, injected, {"executed": True})
+
+        record = self._records(tmp_path)[0]
+        assert record["source"] == injected
+        assert record["replayable"] is False
+        assert injected not in self._script(tmp_path)
+
+    def test_source_must_match_the_executed_command(self, tmp_path, monkeypatch):
+        plugin = self._load_plugin(monkeypatch, tmp_path)
+        plugin._record_history(
+            "refresh", {}, "run /tmp/untrusted.pml", {"executed": True}
+        )
+
+        assert self._records(tmp_path)[0]["replayable"] is False
+        assert "run /tmp/untrusted.pml" not in self._script(tmp_path)
+
     def test_internal_call_without_source_is_not_recorded(self, tmp_path, monkeypatch):
         """The connection health-check ping must not pollute the history."""
         plugin = self._load_plugin(monkeypatch, tmp_path)

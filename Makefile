@@ -27,7 +27,7 @@ endif
 FORCE ?=
 
 .PHONY: help install install-plugin install-pymolrc install-skill test \
-        test-integration lint
+        test-integration lint typecheck validate
 
 help:
 	@echo "Targets:"
@@ -38,6 +38,8 @@ help:
 	@echo "  test              Run the test suite"
 	@echo "  test-integration  Run tests against real PyMOL processes (slow)"
 	@echo "  lint              Run ruff"
+	@echo "  typecheck         Run Pyright"
+	@echo "  validate          Run lint, type checks, and tests"
 	@echo ""
 	@echo "Variables:"
 	@echo "  PYMOL=<path>      PyMOL executable (auto-detected; a shell alias will not work)"
@@ -80,3 +82,8 @@ test-integration:
 
 lint:
 	uv run ruff check .
+
+typecheck:
+	uv run pyright src/pymol_mcp
+
+validate: lint typecheck test

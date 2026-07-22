@@ -33,8 +33,8 @@ def server(plugin):
 def send(port, payload, timeout=5):
     """Send one JSON message and return the decoded reply."""
     with socket.create_connection(("localhost", port), timeout=timeout) as sock:
-        sock.sendall(json.dumps(payload).encode("utf-8"))
-        return json.loads(sock.recv(65536).decode("utf-8"))
+        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        return json.loads(sock.makefile().readline())
 
 
 class TestSocketServerLifecycle:
@@ -64,22 +64,28 @@ class TestSocketServerLifecycle:
 
 class TestSocketServerDispatch:
     def test_successful_command_returns_success(self, server):
-        reply = send(server.port, {
-            "type": "structured_command",
-            "command": "fetch",
-            "args": {"code": "1ubq"},
-            "source": "fetch 1ubq",
-        })
+        reply = send(
+            server.port,
+            {
+                "type": "structured_command",
+                "command": "fetch",
+                "args": {"code": "1ubq"},
+                "source": "fetch 1ubq",
+            },
+        )
         assert reply["status"] == "success"
         assert reply["result"]["output"] == "ran fetch"
 
     def test_handler_failure_becomes_an_error_reply(self, server):
-        reply = send(server.port, {
-            "type": "structured_command",
-            "command": "show",
-            "args": {"representation": "cartoon", "selection": "chain Z"},
-            "source": "show cartoon, chain Z",
-        })
+        reply = send(
+            server.port,
+            {
+                "type": "structured_command",
+                "command": "show",
+                "args": {"representation": "cartoon", "selection": "chain Z"},
+                "source": "show cartoon, chain Z",
+            },
+        )
         assert reply["status"] == "error"
         assert "Invalid selection" in reply["message"]
 
@@ -90,23 +96,44 @@ class TestSocketServerDispatch:
 
     def test_request_without_source_still_executes(self, server):
         """The health-check ping carries no source; it must still work."""
-        reply = send(server.port, {
-            "type": "structured_command",
-            "command": "refresh",
-            "args": {},
-        })
+        reply = send(
+            server.port,
+            {
+                "type": "structured_command",
+                "command": "refresh",
+                "args": {},
+            },
+        )
         assert reply["status"] == "success"
 
     def test_partial_json_is_buffered_until_complete(self, server):
         """Messages larger than one recv must be reassembled, not dropped."""
-        payload = json.dumps({
-            "type": "structured_command",
-            "command": "select",
-            "args": {"name": "big", "selection": "x" * 6000},
-            "source": "select big, ...",
-        }).encode("utf-8")
+        payload = (
+            json.dumps(
+                {
+                    "type": "structured_command",
+                    "command": "select",
+                    "args": {"name": "big", "selection": "x" * 6000},
+                    "source": "select big, ...",
+                }
+            ).encode("utf-8")
+            + b"\n"
+        )
         with socket.create_connection(("localhost", server.port), timeout=5) as sock:
             sock.sendall(payload[:100])
             sock.sendall(payload[100:])
-            reply = json.loads(sock.recv(65536).decode("utf-8"))
+            reply = json.loads(sock.makefile().readline())
         assert reply["status"] == "success"
+
+    def test_coalesced_messages_are_framed_separately(self, server):
+        payload = {
+            "type": "structured_command",
+            "command": "refresh",
+            "args": {},
+        }
+        wire = ((json.dumps(payload) + "\n") * 2).encode("utf-8")
+        with socket.create_connection(("localhost", server.port), timeout=5) as sock:
+            reader = sock.makefile()
+            sock.sendall(wire)
+            replies = [json.loads(reader.readline()) for _ in range(2)]
+        assert [reply["status"] for reply in replies] == ["success", "success"]

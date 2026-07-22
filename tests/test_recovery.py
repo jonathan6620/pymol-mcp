@@ -138,12 +138,13 @@ class TestAcceptLoopSurvivesErrors:
         try:
             for _ in range(3):
                 with socket.create_connection(("localhost", port), timeout=5) as sock:
-                    sock.sendall(json.dumps({
+                    payload = {
                         "type": "structured_command",
                         "command": "show",
                         "args": {},
                         "source": "show cartoon",
-                    }).encode())
+                    }
+                    sock.sendall((json.dumps(payload) + "\n").encode())
                     sock.recv(65536)
 
             assert server.running is True, "listener must survive handler errors"

@@ -119,28 +119,28 @@ class TestInstallPlugin:
         """PyMOL imports plugins as pmg_tk.startup.<directory name>."""
         assert mod.MODULE_NAME == "pmg_tk.startup." + mod.PLUGIN_DIRNAME
 
-    def test_remove_existing_clears_a_symlink_without_following_it(
-        self, mod, tmp_path
-    ):
+    def test_clear_removes_a_symlink_without_following_it(self, mod, tmp_path):
         target = tmp_path / "real"
         target.mkdir()
         (target / "keep.txt").write_text("x")
         link = tmp_path / "link"
         link.symlink_to(target, target_is_directory=True)
 
-        assert mod.remove_existing(str(link)) is True
+        assert mod.clear(str(link)) is None
         assert not link.exists()
         assert (target / "keep.txt").is_file(), "must not delete the link target"
 
-    def test_remove_existing_clears_a_copied_directory(self, mod, tmp_path):
+    def test_clear_backs_up_a_copied_directory(self, mod, tmp_path):
         stale = tmp_path / "stale"
         stale.mkdir()
         (stale / "__init__.py").write_text("old")
-        assert mod.remove_existing(str(stale)) is True
+        saved = mod.clear(str(stale))
         assert not stale.exists()
+        assert Path(saved).name.startswith("stale.bak-")
+        assert (Path(saved) / "__init__.py").read_text() == "old"
 
-    def test_remove_existing_reports_nothing_to_do(self, mod, tmp_path):
-        assert mod.remove_existing(str(tmp_path / "absent")) is False
+    def test_clear_reports_nothing_to_do(self, mod, tmp_path):
+        assert mod.clear(str(tmp_path / "absent")) is None
 
     def test_copy_ignores_junk(self, mod):
         ignored = mod.COPY_IGNORE("dir", [".git", "__pycache__", ".DS_Store", "a.py"])

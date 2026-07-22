@@ -1,11 +1,11 @@
-'''
+"""
 PyMOL MCP Plugin
 
 A plugin that listens for socket connections and executes allowlisted PyMOL
 commands received as structured JSON. No arbitrary code execution (exec) is used.
 
 Based on the concept of the "Rendering Plugin" from Michael Lerner.
-'''
+"""
 
 from __future__ import absolute_import, print_function
 
@@ -88,9 +88,7 @@ def _history_paths():
     if HISTORY_SETTING.lower() in HISTORY_OFF:
         return None, None
 
-    directory = HISTORY_SETTING or os.path.join(
-        os.path.expanduser("~"), ".pymol-mcp"
-    )
+    directory = HISTORY_SETTING or os.path.join(os.path.expanduser("~"), ".pymol-mcp")
     os.makedirs(directory, exist_ok=True)
 
     pml = os.path.join(directory, "session-%s.pml" % time.strftime("%Y%m%d-%H%M%S"))
@@ -104,6 +102,18 @@ def _history_paths():
     _history_dir, _history_pml = directory, pml
     _log("Recording command history to %s" % directory)
     return _history_dir, _history_pml
+
+
+def _replay_source(command_name, source):
+    """Return a safe one-line replay command, or None for untrusted source."""
+    if not isinstance(source, str):
+        return None
+    source = source.strip()
+    if not source or not source.isprintable() or ";" in source or source.endswith("\\"):
+        return None
+    if source.split(None, 1)[0].lower() != command_name.lower():
+        return None
+    return source
 
 
 def _record_history(command_name, args, source, result):
@@ -127,6 +137,7 @@ def _record_history(command_name, args, source, result):
                 return
 
             ok = not (isinstance(result, dict) and result.get("executed") is False)
+            replay_source = _replay_source(command_name, source)
             record = {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "command": command_name,
@@ -134,6 +145,8 @@ def _record_history(command_name, args, source, result):
                 "source": source,
                 "ok": ok,
             }
+            if replay_source is None:
+                record["replayable"] = False
             if isinstance(result, dict):
                 detail = result.get("error") if not ok else result.get("output")
                 if detail:
@@ -154,9 +167,9 @@ def _record_history(command_name, args, source, result):
                 fh.write(json.dumps(record) + "\n")
 
             # A failed command would not replay, so keep the script clean.
-            if ok:
+            if ok and replay_source is not None:
                 with open(pml, "a") as fh:
-                    fh.write(source + "\n")
+                    fh.write(replay_source + "\n")
     except Exception as e:
         _history_broken = True
         _log("Command history disabled after a write error: %s" % e)
@@ -208,16 +221,18 @@ def _report_listener_death(port, error):
 
 
 def __init_plugin__(app=None):
-    '''
+    """
     Add an entry to the PyMOL "Plugin" menu
-    '''
+    """
     from pymol.plugins import addmenuitemqt
-    addmenuitemqt('PyMol MCP Socket Plugin', run_plugin_gui)
+
+    addmenuitemqt("PyMol MCP Socket Plugin", run_plugin_gui)
 
 
 ##############################################################################
 # SERVER CONTROL
 ##############################################################################
+
 
 def execute_structured_command(command_name, args):
     """
@@ -231,6 +246,7 @@ def execute_structured_command(command_name, args):
 
         if _dispatcher is None:
             from pymol import cmd
+
             _dispatcher = build_command_dispatcher(cmd)
 
         handler = _dispatcher.get(command_name)
@@ -343,13 +359,44 @@ def stop_socket_server():
 # going through the server at all.
 
 # Per-atom properties PyMOL exposes to the expression namespace.
-ALTER_NAMES = frozenset({
-    "name", "resn", "resi", "resv", "chain", "segi", "elem", "alt", "b", "q",
-    "type", "formal_charge", "partial_charge", "numeric_type", "text_type",
-    "vdw", "ss", "color", "label", "ID", "index", "rank", "model", "state",
-    "cartoon", "flags", "geom", "valence", "protons", "oneletter", "reps",
-    "True", "False", "None",
-})
+ALTER_NAMES = frozenset(
+    {
+        "name",
+        "resn",
+        "resi",
+        "resv",
+        "chain",
+        "segi",
+        "elem",
+        "alt",
+        "b",
+        "q",
+        "type",
+        "formal_charge",
+        "partial_charge",
+        "numeric_type",
+        "text_type",
+        "vdw",
+        "ss",
+        "color",
+        "label",
+        "ID",
+        "index",
+        "rank",
+        "model",
+        "state",
+        "cartoon",
+        "flags",
+        "geom",
+        "valence",
+        "protons",
+        "oneletter",
+        "reps",
+        "True",
+        "False",
+        "None",
+    }
+)
 ALTER_COORDINATE_NAMES = frozenset({"x", "y", "z"})
 # Calls are otherwise blocked outright; these are pure and cannot reach out.
 ALTER_CALLS = frozenset({"str", "int", "float", "abs", "round", "len", "min", "max"})
@@ -358,12 +405,38 @@ ALTER_CALLS = frozenset({"str", "int", "float", "abs", "round", "len", "min", "m
 # Subscript are deliberately absent: they are what make `().__class__` and
 # similar sandbox escapes work.
 ALTER_NODES = (
-    ast.Expression, ast.Constant, ast.Name, ast.Load, ast.Call,
-    ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp,
-    ast.Tuple, ast.List,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
-    ast.USub, ast.UAdd, ast.Not, ast.And, ast.Or,
-    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn,
+    ast.Expression,
+    ast.Constant,
+    ast.Name,
+    ast.Load,
+    ast.Call,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.BoolOp,
+    ast.Compare,
+    ast.IfExp,
+    ast.Tuple,
+    ast.List,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.FloorDiv,
+    ast.Mod,
+    ast.Pow,
+    ast.USub,
+    ast.UAdd,
+    ast.Not,
+    ast.And,
+    ast.Or,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
+    ast.In,
+    ast.NotIn,
 )
 
 
@@ -422,6 +495,7 @@ def check_atom_expression(expression, coordinates=False):
 ##############################################################################
 # ALLOWLISTED COMMAND DISPATCH
 ##############################################################################
+
 
 def build_command_dispatcher(cmd):
     """
@@ -491,7 +565,7 @@ def build_command_dispatcher(cmd):
         return cmd.spectrum(
             args.get("expression", "count"),
             args.get("palette", "rainbow"),
-            args.get("selection", "all")
+            args.get("selection", "all"),
         )
 
     def _label(args):
@@ -503,7 +577,7 @@ def build_command_dispatcher(cmd):
         return cmd.distance(
             args.get("name", "dist"),
             args.get("selection1", "(pk1)"),
-            args.get("selection2", "(pk2)")
+            args.get("selection2", "(pk2)"),
         )
 
     def _angle(args):
@@ -511,7 +585,7 @@ def build_command_dispatcher(cmd):
             args.get("name", "angle"),
             args.get("selection1", "(pk1)"),
             args.get("selection2", "(pk2)"),
-            args.get("selection3", "(pk3)")
+            args.get("selection3", "(pk3)"),
         )
 
     def _dihedral(args):
@@ -520,7 +594,7 @@ def build_command_dispatcher(cmd):
             args.get("selection1", "(pk1)"),
             args.get("selection2", "(pk2)"),
             args.get("selection3", "(pk3)"),
-            args.get("selection4", "(pk4)")
+            args.get("selection4", "(pk4)"),
         )
 
     def _center(args):
@@ -642,9 +716,7 @@ def build_command_dispatcher(cmd):
             state = int(state)
         except (ValueError, TypeError):
             state = 1
-        return cmd.alter_state(
-            state, args.get("selection", "all"), expression
-        )
+        return cmd.alter_state(state, args.get("selection", "all"), expression)
 
     def _h_add(args):
         return cmd.h_add(args.get("selection", "all"))
@@ -686,7 +758,7 @@ def build_command_dispatcher(cmd):
             args.get("name", "mesh"),
             args.get("map_object", ""),
             level,
-            args.get("selection", "all")
+            args.get("selection", "all"),
         )
 
     def _isosurface(args):
@@ -699,7 +771,7 @@ def build_command_dispatcher(cmd):
             args.get("name", "surf"),
             args.get("map_object", ""),
             level,
-            args.get("selection", "all")
+            args.get("selection", "all"),
         )
 
     def _sculpt_activate(args):
@@ -794,9 +866,7 @@ def build_command_dispatcher(cmd):
         except (ValueError, TypeError):
             cutoff = 20.0
         return cmd.symexp(
-            args.get("prefix", "sym"),
-            args.get("selection", "all"),
-            cutoff
+            args.get("prefix", "sym"), args.get("selection", "all"), cutoff
         )
 
     def _set_symmetry(args):
@@ -906,9 +976,19 @@ def build_command_dispatcher(cmd):
 
     # util.* commands are called directly; see _util_command for why.
     util_commands = [
-        "util.cbc", "util.cbaw", "util.cbag", "util.cbac", "util.cbam",
-        "util.cbay", "util.cbas", "util.cbab", "util.cbao", "util.cbap",
-        "util.cbak", "util.chainbow", "util.rainbow",
+        "util.cbc",
+        "util.cbaw",
+        "util.cbag",
+        "util.cbac",
+        "util.cbam",
+        "util.cbay",
+        "util.cbas",
+        "util.cbab",
+        "util.cbao",
+        "util.cbap",
+        "util.cbak",
+        "util.chainbow",
+        "util.rainbow",
     ]
     for util_cmd in util_commands:
         dispatcher[util_cmd] = lambda args, name=util_cmd: _util_command(name, args)
@@ -920,8 +1000,9 @@ def build_command_dispatcher(cmd):
 # SOCKET SERVER
 ##############################################################################
 
+
 class SocketServer:
-    def __init__(self, host='localhost', port=9876):
+    def __init__(self, host="localhost", port=9876):
         self.host = host
         self.port = port
         self.socket = None
@@ -958,9 +1039,7 @@ class SocketServer:
                 # and connections go to an arbitrary one. That would let two
                 # PyMOL instances both claim a port and break both the "bind
                 # before reporting success" guarantee and port auto-allocation.
-                self.socket.setsockopt(
-                    socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
-                )
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             else:
                 # POSIX: only permits rebinding a port left in TIME_WAIT. It does
                 # not allow two live listeners, so the bind below still fails.
@@ -1021,9 +1100,7 @@ class SocketServer:
                 client.settimeout(1.0)
                 with self._clients_lock:
                     self._clients.add(client)
-                worker = threading.Thread(
-                    target=self._serve_client, args=(client,)
-                )
+                worker = threading.Thread(target=self._serve_client, args=(client,))
                 worker.daemon = True
                 worker.start()
 
@@ -1048,7 +1125,7 @@ class SocketServer:
         was attached to could not answer an instance_info probe and dropped out
         of discovery entirely.
         """
-        buffer = b''
+        buffer = b""
         try:
             while self.running:
                 try:
@@ -1057,32 +1134,41 @@ class SocketServer:
                         break
 
                     buffer += data
-                    try:
-                        command = json.loads(buffer.decode('utf-8'))
-                    except json.JSONDecodeError:
-                        # A partial message; wait for the rest.
-                        continue
-                    buffer = b''
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        if not line.strip():
+                            continue
+                        try:
+                            command = json.loads(line.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                            response = {
+                                "status": "error",
+                                "message": "Invalid JSON message: %s" % e,
+                            }
+                            client.sendall(
+                                (json.dumps(response) + "\n").encode("utf-8")
+                            )
+                            continue
 
-                    # PyMOL is not safe to drive from several threads at once,
-                    # so connections are concurrent but commands are not.
-                    with self._command_lock:
-                        result = self._handle_command(command)
+                        # PyMOL is not safe to drive from several threads at once,
+                        # so connections are concurrent but commands are not.
+                        with self._command_lock:
+                            result = self._handle_command(command)
 
-                    failed = isinstance(result, dict) and (
-                        result.get("executed") is False
-                    )
-                    if failed:
-                        response = json.dumps({
-                            "status": "error",
-                            "message": result.get("error", "Unknown error"),
-                        })
-                    else:
-                        response = json.dumps({
-                            "status": "success",
-                            "result": result or "Command executed",
-                        })
-                    client.sendall(response.encode('utf-8'))
+                        failed = isinstance(result, dict) and (
+                            result.get("executed") is False
+                        )
+                        if failed:
+                            response = {
+                                "status": "error",
+                                "message": result.get("error", "Unknown error"),
+                            }
+                        else:
+                            response = {
+                                "status": "success",
+                                "result": result or "Command executed",
+                            }
+                        client.sendall((json.dumps(response) + "\n").encode("utf-8"))
 
                 except socket.timeout:
                     continue
@@ -1143,10 +1229,11 @@ class SocketServer:
 # GUI
 ##############################################################################
 
+
 def run_plugin_gui():
-    '''
+    """
     Open our custom dialog
-    '''
+    """
     global dialog
 
     if dialog is None:
@@ -1154,13 +1241,14 @@ def run_plugin_gui():
 
     dialog.show()
 
+
 def make_dialog():
     from pymol.Qt import QtWidgets
     from pymol.Qt.utils import loadUi
 
     dialog = QtWidgets.QDialog()
 
-    uifile = os.path.join(os.path.dirname(__file__), 'pymol_mcp_plugin.ui')
+    uifile = os.path.join(os.path.dirname(__file__), "pymol_mcp_plugin.ui")
     form = loadUi(uifile, dialog)
 
     # Reflect the current state — the server may already have been started
@@ -1194,6 +1282,7 @@ def make_dialog():
     form.button_close.clicked.connect(close_dialog)
 
     return dialog
+
 
 def update_status_label(form, text):
     """Update the status label with the given text"""

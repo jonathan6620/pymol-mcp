@@ -18,6 +18,7 @@ import importlib
 import os
 import shutil
 import sys
+import time
 
 PLUGIN_DIRNAME = "pymol-mcp-socket-plugin"
 MODULE_NAME = "pmg_tk.startup." + PLUGIN_DIRNAME
@@ -63,15 +64,16 @@ def startup_dir():
     )
 
 
-def remove_existing(dest):
-    """Clear any previous install, symlink or copy."""
-    if os.path.islink(dest) or os.path.isfile(dest):
+def clear(dest):
+    """Remove our symlink, but preserve an existing real install as a backup."""
+    if os.path.islink(dest):
         os.unlink(dest)
-        return True
-    if os.path.isdir(dest):
-        shutil.rmtree(dest)
-        return True
-    return False
+        return None
+    if os.path.exists(dest):
+        saved = f"{dest}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+        shutil.move(dest, saved)
+        return saved
+    return None
 
 
 def verify(dest):
@@ -100,7 +102,10 @@ def main():
         print("Plugin verified. Start PyMOL and it will be available.")
         return
 
-    replaced = remove_existing(dest)
+    replaced = os.path.lexists(dest)
+    saved = clear(dest)
+    if saved:
+        print(f"Moved previous plugin to {saved}")
 
     linked = True
     try:

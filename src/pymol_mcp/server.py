@@ -886,6 +886,7 @@ class PyMOLConnection:
         self.host = host
         self.port = port
         self.sock: socket.socket | None = None
+        self._recv_buffer = b""
 
     def connect(self) -> bool:
         if self.sock:
@@ -908,6 +909,7 @@ class PyMOLConnection:
                 logger.error(f"Disconnect error: {e}")
             finally:
                 self.sock = None
+                self._recv_buffer = b""
 
     def send_command(
         self, command: str, args: dict[str, Any], source: str | None = None
@@ -923,34 +925,28 @@ class PyMOLConnection:
         """
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to PyMOL")
+        sock = self.sock
+        if sock is None:  # Narrow the attribute after connect() for type checkers.
+            raise ConnectionError("Not connected to PyMOL")
         request = SocketRequest(command=command, args=args, source=source)
         try:
             # exclude_none keeps the payload byte-identical to before `source`
             # existed whenever it is unset, so an older plugin sees no change.
             payload = request.model_dump(exclude_none=True)
-            self.sock.sendall(json.dumps(payload).encode("utf-8"))
-            self.sock.settimeout(10.0)
-            chunks: list[bytes] = []
-            while True:
-                chunk = self.sock.recv(4096)
+            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            sock.settimeout(10.0)
+            while b"\n" not in self._recv_buffer:
+                chunk = sock.recv(4096)
                 if not chunk:
-                    break
-                chunks.append(chunk)
-                buffer = b"".join(chunks)
-                try:
-                    response = json.loads(buffer.decode("utf-8"))
-                    return response
-                except json.JSONDecodeError:
-                    continue
-            if chunks:
-                buffer = b"".join(chunks)
-                return json.loads(buffer.decode("utf-8"))
-            raise ConnectionError("No response from PyMOL")
+                    raise ConnectionError("No response from PyMOL")
+                self._recv_buffer += chunk
+            line, self._recv_buffer = self._recv_buffer.split(b"\n", 1)
+            return json.loads(line.decode("utf-8"))
         except socket.timeout:
-            self.sock = None
+            self.disconnect()
             raise TimeoutError("PyMOL response timed out")
         except Exception as e:
-            self.sock = None
+            self.disconnect()
             raise RuntimeError(f"PyMOL command error: {e}")
 
 
@@ -976,8 +972,16 @@ def discover_instances() -> list[dict[str, Any]]:
         try:
             if probe.connect_ex(("localhost", port)) != 0:
                 continue
-            probe.sendall(json.dumps({"type": "instance_info"}).encode("utf-8"))
-            reply = json.loads(probe.recv(65536).decode("utf-8"))
+            request = json.dumps({"type": "instance_info"}) + "\n"
+            probe.sendall(request.encode("utf-8"))
+            response = b""
+            while b"\n" not in response:
+                chunk = probe.recv(4096)
+                if not chunk:
+                    raise ConnectionError("Instance closed without a response")
+                response += chunk
+            line, _ = response.split(b"\n", 1)
+            reply = json.loads(line.decode("utf-8"))
             result = reply.get("result") or {}
             found.append(
                 {
@@ -1021,6 +1025,9 @@ def get_pymol_connection(port: int | None = None) -> PyMOLConnection:
                 "Pass instance=<port> to choose one."
             )
         port = instances[0]["port"]
+
+    if port is None:  # The branches above either assign a port or raise.
+        raise RuntimeError("No PyMOL instance selected.")
 
     existing = _connections.get(port)
     if existing is not None:

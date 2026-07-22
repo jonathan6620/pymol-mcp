@@ -1,7 +1,8 @@
 """Pydantic models for the PyMOL MCP server."""
 
 import re
-from typing import Any, Iterator, Literal
+from collections.abc import Generator
+from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -111,6 +112,7 @@ class ParseResult(BaseModel):
     command: str
     args: dict[str, Any]
 
-    def __iter__(self) -> Iterator:
+    def __iter__(self) -> Generator[Any, None, None]:
         """Support tuple unpacking: cmd, args = parse_pymol_input(...)"""
-        return iter((self.command, self.args))
+        yield self.command
+        yield self.args
