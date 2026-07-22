@@ -26,6 +26,10 @@ socket_server = None
 received_commands = deque(maxlen=200)
 listening = False
 current_port = 9876  # Default port
+# Each PyMOL claims the first free port here, so several can run at once. The
+# MCP server discovers them by scanning the same range, which needs no registry
+# file and cannot go stale when an instance is killed.
+PORT_RANGE = range(9876, 9896)
 _dispatcher = None  # Built lazily on first command
 
 # PyMOL is commonly launched from the same terminal as the MCP client. Anything
@@ -221,20 +225,45 @@ def execute_structured_command(command_name, args):
 def start_socket_server(port=None):
     """
     Start the MCP socket listener. Returns True if it was started by this call,
-    False if it was already running. Safe to call from `.pymolrc.py`.
+    False if no port could be claimed. Safe to call from `.pymolrc.py`.
+
+    With no port, claims the first free one in PORT_RANGE, so a second PyMOL
+    gets its own listener instead of silently having none. The MCP server finds
+    them by scanning the same range. Pass a port explicitly to pin one.
     """
     global socket_server, listening, current_port
 
     if listening:
         return False
 
-    current_port = port or current_port
-    socket_server = SocketServer(port=current_port)
-    if not socket_server.start(execute_structured_command):
-        return False
+    candidates = [port] if port else list(PORT_RANGE)
+    for candidate in candidates:
+        server = SocketServer(port=candidate)
+        if server.start(execute_structured_command):
+            socket_server = server
+            current_port = candidate
+            listening = True
+            return True
 
-    listening = True
-    return True
+    return False
+
+
+def describe_instance(port):
+    """Identify this PyMOL to a client scanning for instances.
+
+    A bare port number tells nobody which window they are about to drive, so
+    report the loaded objects too. Everything here is best-effort: discovery
+    must not fail because one field could not be read.
+    """
+    info = {"executed": True, "port": port, "pid": os.getpid()}
+    try:
+        from pymol import cmd
+
+        info["objects"] = list(cmd.get_names("objects"))
+    except Exception as e:  # noqa: BLE001 - report, never propagate
+        info["objects"] = []
+        info["warning"] = f"could not list objects: {e}"
+    return info
 
 
 def stop_socket_server():
@@ -864,7 +893,19 @@ class SocketServer:
 
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                # Windows only. There SO_REUSEADDR means what SO_REUSEPORT means
+                # on Unix: a second socket may bind a port that is already bound,
+                # and connections go to an arbitrary one. That would let two
+                # PyMOL instances both claim a port and break both the "bind
+                # before reporting success" guarantee and port auto-allocation.
+                self.socket.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+                )
+            else:
+                # POSIX: only permits rebinding a port left in TIME_WAIT. It does
+                # not allow two live listeners, so the bind below still fails.
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.socket.bind((self.host, self.port))
             self.socket.listen(1)
             self.socket.settimeout(1.0)
@@ -955,6 +996,8 @@ class SocketServer:
             return
 
         cmd_type = command.get("type", "")
+        if cmd_type == "instance_info":
+            return describe_instance(self.port)
         if cmd_type != "structured_command":
             return {"executed": False, "error": f"Unknown message type: {cmd_type}"}
 

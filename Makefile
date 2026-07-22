@@ -45,7 +45,7 @@ help:
 
 install: install-plugin install-pymolrc install-skill
 	@echo ""
-	@echo "Done. Restart PyMOL; it will report the listener on port 9876."
+	@echo "Done. Restart PyMOL; it will report the port its listener claimed."
 
 install-plugin:
 	@if [ -z "$(PYMOL)" ]; then \

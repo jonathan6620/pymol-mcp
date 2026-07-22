@@ -910,26 +910,89 @@ class PyMOLConnection:
             self.sock = None
             raise RuntimeError(f"PyMOL command error: {e}")
 
-_global_connection: Optional[PyMOLConnection] = None
+# Each PyMOL claims the first free port here; see PORT_RANGE in the plugin.
+# Discovery is a scan rather than a registry file: nothing to clean up when an
+# instance is killed, and a scan of 20 localhost ports costs about a
+# millisecond because a closed port refuses immediately.
+PORT_RANGE = range(9876, 9896)
+SCAN_TIMEOUT = 0.2
 
-def get_pymol_connection() -> PyMOLConnection:
-    global _global_connection
-    if _global_connection is not None:
+
+def discover_instances() -> list[Dict[str, Any]]:
+    """Find every listening PyMOL and ask each to identify itself.
+
+    Returns dicts with port, pid and loaded objects, ordered by port. An
+    instance that answers nothing usable is still reported, since it is
+    reachable and the user may want to know it is there.
+    """
+    found: list[Dict[str, Any]] = []
+    for port in PORT_RANGE:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(SCAN_TIMEOUT)
         try:
-            _global_connection.send_command("refresh", {})
-            return _global_connection
+            if probe.connect_ex(('localhost', port)) != 0:
+                continue
+            probe.sendall(json.dumps({"type": "instance_info"}).encode('utf-8'))
+            reply = json.loads(probe.recv(65536).decode('utf-8'))
+            result = reply.get("result") or {}
+            found.append({
+                "port": port,
+                "pid": result.get("pid"),
+                "objects": result.get("objects", []),
+            })
+        except Exception as e:  # noqa: BLE001 - one bad instance must not stop the scan
+            logger.info(f"Instance probe failed on {port}: {e}")
+            found.append({"port": port, "pid": None, "objects": []})
+        finally:
+            probe.close()
+    return found
+
+
+_connections: Dict[int, PyMOLConnection] = {}
+
+
+def get_pymol_connection(port: Optional[int] = None) -> PyMOLConnection:
+    """Return a live connection to the requested PyMOL, or the obvious one.
+
+    With no port: use the only running instance. If several are running the
+    choice is ambiguous, so refuse and list them rather than picking one and
+    silently driving a window the user is not looking at.
+    """
+    if port is None:
+        instances = discover_instances()
+        if not instances:
+            raise RuntimeError(
+                "No PyMOL is listening. Start PyMOL, then retry; the plugin "
+                "claims a port automatically."
+            )
+        if len(instances) > 1:
+            listed = ", ".join(
+                f"{i['port']} ({', '.join(i['objects']) or 'nothing loaded'})"
+                for i in instances
+            )
+            raise RuntimeError(
+                f"{len(instances)} PyMOL instances are running: {listed}. "
+                "Pass instance=<port> to choose one."
+            )
+        port = instances[0]["port"]
+
+    existing = _connections.get(port)
+    if existing is not None:
+        try:
+            existing.send_command("refresh", {})
+            return existing
         except Exception:
             try:
-                _global_connection.disconnect()
+                existing.disconnect()
             except Exception:
                 pass
-            _global_connection = None
-    if _global_connection is None:
-        conn = PyMOLConnection()
-        if not conn.connect():
-            raise RuntimeError("Could not connect to PyMOL socket.")
-        _global_connection = conn
-    return _global_connection
+            _connections.pop(port, None)
+
+    conn = PyMOLConnection(port=port)
+    if not conn.connect():
+        raise RuntimeError(f"Could not connect to PyMOL on port {port}.")
+    _connections[port] = conn
+    return conn
 
 ##############################################################################
 # PARSING USER INPUT TO STRUCTURED COMMANDS
@@ -994,16 +1057,25 @@ def analyze_pymol_output(output_text: str) -> Optional[str]:
 async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     try:
         logger.info("Starting PyMOL MCP server (structured command mode).")
+        # Report what is out there rather than connecting. With several
+        # instances running there is no single right one to open at startup,
+        # and the caller picks per command.
         try:
-            get_pymol_connection()
+            found = discover_instances()
+            logger.info(
+                "PyMOL instances found: "
+                + (", ".join(str(i["port"]) for i in found) or "none")
+            )
         except Exception as e:
-            logger.warning(f"Initial PyMOL connection failure: {e}")
+            logger.warning(f"Instance discovery failed: {e}")
         yield {}
     finally:
-        global _global_connection
-        if _global_connection:
-            _global_connection.disconnect()
-            _global_connection = None
+        for conn in list(_connections.values()):
+            try:
+                conn.disconnect()
+            except Exception as e:
+                logger.info(f"Error closing connection: {e}")
+        _connections.clear()
         logger.info("PyMOL MCP server shut down.")
 
 SERVER_INSTRUCTIONS = """\
@@ -1036,7 +1108,9 @@ mcp = FastMCP("PyMOLMCPServer",
 ##############################################################################
 
 @mcp.tool()
-def parse_and_execute(ctx: Context, user_input: str) -> str:
+def parse_and_execute(
+    ctx: Context, user_input: str, instance: Optional[int] = None
+) -> str:
     """
     Executes a single PyMOL command given in literal PyMOL syntax.
 
@@ -1044,6 +1118,11 @@ def parse_and_execute(ctx: Context, user_input: str) -> str:
     table of command patterns; anything else is rejected rather than guessed at.
     Translate the user's request into PyMOL syntax yourself, then call this once
     per command. Use `list_commands` to look up exact syntax.
+
+    `instance` is the port of the PyMOL to drive. Leave it unset when only one
+    is running. With several running an unset instance is an error rather than
+    a guess, since driving the window the user is not watching looks exactly
+    like the command doing nothing. Call `list_instances` to see the choices.
 
     Translating requests:
       "Load PDB 1UBQ and show it as cartoon"
@@ -1091,7 +1170,7 @@ def parse_and_execute(ctx: Context, user_input: str) -> str:
     if command_name == "color_ss":
         sel = args.get("selection", "all")
         try:
-            conn = get_pymol_connection()
+            conn = get_pymol_connection(instance)
             results = []
             for color, ss in [("red", "h"), ("yellow", "s"), ("green", "l+")]:
                 ss_sel = f"(ss {ss}) and ({sel})" if sel != "all" else f"ss {ss}"
@@ -1109,7 +1188,7 @@ def parse_and_execute(ctx: Context, user_input: str) -> str:
             return f"Execution error: {e}"
 
     try:
-        conn = get_pymol_connection()
+        conn = get_pymol_connection(instance)
         response = conn.send_command(command_name, args, source=user_input.strip())
         resp = SocketResponse(**response)
         if resp.status == "success":
@@ -1150,6 +1229,42 @@ def _describe_command(name: str, cmd: CommandDef) -> str:
         lines.append(f"  {p.name} ({'; '.join(bits)})")
     if cmd.composite:
         lines.append("  note: composite -- expands to several PyMOL calls")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def list_instances(ctx: Context) -> str:
+    """
+    Lists the running PyMOL instances and what each has loaded.
+
+    Each PyMOL claims its own port, so several can run at once. Pass a port as
+    `instance` to `parse_and_execute` to drive that specific one. Use this when
+    a command reports the choice is ambiguous, or when the user refers to a
+    particular window.
+
+    The loaded object names are what distinguish one window from another; a
+    port number on its own identifies nothing to a human.
+    """
+    try:
+        instances = discover_instances()
+    except Exception as e:
+        return f"Instance discovery failed: {e}"
+
+    if not instances:
+        return (
+            "No PyMOL is listening. Start PyMOL and it will claim a port "
+            f"in {PORT_RANGE.start}-{PORT_RANGE.stop - 1} automatically."
+        )
+
+    lines = [f"{len(instances)} PyMOL instance(s) running:"]
+    for inst in instances:
+        objects = ", ".join(inst["objects"]) if inst["objects"] else "nothing loaded"
+        pid = f", pid {inst['pid']}" if inst["pid"] else ""
+        lines.append(f"  instance={inst['port']}{pid}: {objects}")
+    if len(instances) == 1:
+        lines.append("\nOnly one, so `instance` can be left unset.")
+    else:
+        lines.append("\nSeveral running: pass instance=<port> on every command.")
     return "\n".join(lines)
 
 

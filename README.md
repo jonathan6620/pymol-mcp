@@ -34,7 +34,7 @@ make install
 ```
 
 Restart PyMOL and start a new Claude Code session. On startup PyMOL prints
-`MCP socket plugin auto-started on port 9876`.
+`MCP socket plugin auto-started on port 9876`, or the next free port.
 
 If `make` cannot find the PyMOL executable, then pass the path:
 `make install PYMOL=/full/path/to/pymol`.
@@ -150,7 +150,9 @@ claude mcp list
 
 ### Step 4: Install the PyMOL Socket Plugin
 
-The MCP server communicates with PyMOL through a socket connection on port 9876. Install the socket listener plugin from the repository you cloned in Step 2:
+The MCP server communicates with PyMOL over a socket. Each PyMOL claims its own
+port in the range 9876-9895, so several instances can run at once. Install the
+socket listener plugin from the repository you cloned in Step 2:
 
 ```bash
 pymol -cq scripts/install_plugin.py
@@ -175,7 +177,6 @@ import importlib, threading, time
 # no path to configure -- it is identical on every machine and every PyMOL
 # distribution. Requires the plugin to be installed (Step 4).
 PLUGIN_MODULE = "pmg_tk.startup.pymol-mcp-socket-plugin"
-PORT = 9876
 
 def _auto_start_mcp_socket():
     time.sleep(3)  # let PyMOL's plugin system finish initializing
@@ -185,29 +186,17 @@ def _auto_start_mcp_socket():
         print("MCP socket plugin not installed -- run: pymol -cq scripts/install_plugin.py")
         return
     try:
-        if plugin.start_socket_server(PORT):
-            print(f"MCP socket plugin auto-started on port {PORT}")
+        # No port argument: claim the first free one, so a second PyMOL gets
+        # its own listener rather than silently having none.
+        if plugin.start_socket_server():
+            print(f"MCP socket plugin auto-started on port {plugin.current_port}")
         else:
-            # Already listening, or the port is taken -- often another PyMOL
-            # instance still holding it.
-            print(f"MCP socket listener not started; is port {PORT} already in use?")
+            print("MCP socket listener not started; every port in range is in use.")
     except Exception as e:
         print(f"MCP socket auto-start failed: {e}")
 
 # Background thread so PyMOL startup isn't blocked
 threading.Thread(target=_auto_start_mcp_socket, daemon=True).start()
-```
-
-#### Verifying the socket is active
-
-You can confirm the listener is running from a terminal:
-
-```bash
-# Linux
-ss -tlnp | grep 9876
-
-# macOS
-lsof -i :9876
 ```
 
 ## Usage
@@ -230,6 +219,22 @@ Here are some examples of what you can ask Claude to do:
 - "Align two structures and show their differences"
 - "Calculate the distance between these two residues"
 - "Save this view as a high-resolution image"
+
+### Multiple PyMOL instances
+
+Each PyMOL claims its own port, so you can run several and drive any of them.
+Ask Claude to list them, then name the one you mean:
+
+```
+> list the PyMOL instances
+  instance=9876, pid 4412: 1ubq
+  instance=9877, pid 4488: 6vxx
+
+> in 9877, colour chain A red
+```
+
+When more than one PyMOL instance is running, Claude must be directed to the
+correct one.
 
 ### The PyMOL skill
 

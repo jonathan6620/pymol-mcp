@@ -28,7 +28,6 @@ import importlib, threading, time
 # PyMOL imports plugins from its startup directory under this name, so there is
 # no path to configure. Requires the plugin to be installed.
 PLUGIN_MODULE = "pmg_tk.startup.pymol-mcp-socket-plugin"
-PORT = 9876
 
 
 def _auto_start_mcp_socket():
@@ -36,13 +35,19 @@ def _auto_start_mcp_socket():
     try:
         plugin = importlib.import_module(PLUGIN_MODULE)
     except ImportError:
-        print("MCP socket plugin not installed -- run: pymol -cq install_plugin.py")
+        print(
+            "MCP socket plugin not installed -- run: "
+            "pymol -cq scripts/install_plugin.py"
+        )
         return
     try:
-        if plugin.start_socket_server(PORT):
-            print(f"MCP socket plugin auto-started on port {{PORT}}")
+        # No port argument: each PyMOL claims the first free one in the
+        # plugin's range, so a second instance gets its own listener instead
+        # of silently having none. The MCP server finds them by scanning.
+        if plugin.start_socket_server():
+            print(f"MCP socket plugin auto-started on port {{plugin.current_port}}")
         else:
-            print(f"MCP socket listener not started; is port {{PORT}} already in use?")
+            print("MCP socket listener not started; every port in range is in use.")
     except Exception as e:
         print(f"MCP socket auto-start failed: {{e}}")
 
@@ -95,7 +100,7 @@ def main():
         with open(path, "w") as fh:
             fh.write(BLOCK)
         print(f"Created {path}")
-        print("Start PyMOL; it will report the listener on port 9876.")
+        print("Start PyMOL; it will report the port its listener claimed.")
         return
 
     with open(path) as fh:

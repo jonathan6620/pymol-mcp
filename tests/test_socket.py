@@ -4,16 +4,7 @@ import json
 import socket
 
 import pytest
-from conftest import load_plugin
-
-
-def free_port():
-    """Ask the OS for an unused port, then release it."""
-    s = socket.socket()
-    s.bind(("localhost", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+from conftest import free_port, load_plugin
 
 
 @pytest.fixture

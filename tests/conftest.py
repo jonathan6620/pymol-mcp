@@ -5,6 +5,7 @@ stub be installed before anything imports the server.
 """
 
 import importlib.util
+import socket
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -18,6 +19,28 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 # where this stub is not in effect.
 for _name in ("mcp", "mcp.server", "mcp.server.fastmcp"):
     sys.modules[_name] = MagicMock()
+
+
+def free_ports(count=1):
+    """Ask the OS for unused ports, then release them.
+
+    Tests must not use the real 9876-9895 range: a developer with PyMOL open
+    would have their live instance discovered by the test suite.
+    """
+    socks = []
+    for _ in range(count):
+        s = socket.socket()
+        s.bind(("localhost", 0))
+        socks.append(s)
+    ports = [s.getsockname()[1] for s in socks]
+    for s in socks:
+        s.close()
+    return ports
+
+
+def free_port():
+    """A single unused port."""
+    return free_ports(1)[0]
 
 
 def load_plugin(name="pymol_plugin"):

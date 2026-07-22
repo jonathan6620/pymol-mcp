@@ -1,22 +1,24 @@
 ---
 name: pymol-mcp
-description: Drive PyMOL through the pymol MCP server. Covers starting PyMOL when nothing is listening on port 9876, what the command table does and does not accept, selection syntax, splitting DNA from RNA, enumerating chains, labelling, transparency, and verifying a change by rendering. Use whenever calling mcp__pymol__parse_and_execute, or when a PyMOL tool call fails to connect.
+description: Drive PyMOL through the pymol MCP server. Covers starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax, splitting DNA from RNA, enumerating chains, labelling, transparency, and verifying a change by rendering. Use whenever calling mcp__pymol__parse_and_execute, or when a PyMOL tool call fails to connect.
 ---
 
 # Driving PyMOL through the MCP server
 
 ## Starting PyMOL
 
-A tool call failing to connect means nothing is listening on port 9876. Check
-before anything else. This works on every platform, unlike `lsof` or `ss`:
+Call `mcp__pymol__list_instances` first. It reports every running PyMOL, so it
+answers both "is one running" and "which one do I mean" in a single call:
 
-```bash
-python3 -c "import socket;s=socket.socket();s.settimeout(1);print('up' if s.connect_ex(('127.0.0.1',9876))==0 else 'down')"
+```
+2 PyMOL instance(s) running:
+  instance=9876, pid 4412: 1ubq
+  instance=9877, pid 4488: 6vxx
 ```
 
-`up` means PyMOL is running and the fault is elsewhere. **If it is down, ask
-before launching** — PyMOL opens a window on the user's desktop, and they may
-have closed it deliberately or be running it on another machine.
+If any are listed, PyMOL is running and a connection failure is something else.
+**If none are, ask before launching** — PyMOL opens a window on the user's
+desktop, and they may have closed it deliberately or be running it elsewhere.
 
 ### Launching it
 
@@ -75,25 +77,41 @@ path if the user needs to reinstall the plugin against it.
 ### Wait for the listener, do not guess
 
 `~/.pymolrc.py` sleeps 3 seconds before starting the listener, on top of PyMOL's
-own startup, so a fixed `sleep` is either too short or wasteful. Poll:
+own startup, so a fixed `sleep` is either too short or wasteful. Poll
+`list_instances` until the new one appears, or from a shell:
 
 ```bash
 python3 -c "
 import socket, time
 for _ in range(30):
-    s = socket.socket(); s.settimeout(1)
-    if s.connect_ex(('127.0.0.1', 9876)) == 0:
-        print('listening'); break
+    live = []
+    for port in range(9876, 9896):
+        s = socket.socket(); s.settimeout(0.2)
+        if s.connect_ex(('127.0.0.1', port)) == 0: live.append(port)
+        s.close()
+    if live: print('listening on', live); break
     time.sleep(1)
 else:
     print('timed out')
 "
 ```
 
-**Never launch a second PyMOL while one is already listening.** The new
-instance cannot take the port, so its plugin reports `MCP socket listener not
-started` and serves nothing. You would then be driving the *old* instance while
-watching the *new* window, and every command would appear to do nothing.
+## Working with several instances
+
+Each PyMOL claims its own port, so more than one can run at once and you can
+drive any of them. Pass `instance=<port>` to `parse_and_execute`:
+
+- **One instance running:** leave `instance` unset.
+- **Several running:** every command needs `instance`. Omitting it is an error
+  that lists the choices rather than picking one, because driving the window
+  the user is not watching is indistinguishable from the command doing nothing.
+
+Identify a window by what it has loaded, from `list_instances`, not by port
+number. If the user says "the ubiquitin one", match it against the object names.
+
+**Launching another PyMOL is now safe** — it takes the next free port instead of
+failing to bind. But it is still a real window on someone's desktop, so ask, and
+check `list_instances` first in case the one they want already exists.
 
 ## The server is not a natural-language interface
 
