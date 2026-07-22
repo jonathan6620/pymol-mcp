@@ -42,6 +42,12 @@ venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Integration tests launch real PyMOL processes, which takes seconds each, so
+# they are opt-in via `make test-integration`.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: drives real PyMOL processes over real sockets",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

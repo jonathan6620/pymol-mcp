@@ -26,7 +26,8 @@ endif
 
 FORCE ?=
 
-.PHONY: help install install-plugin install-pymolrc install-skill test lint
+.PHONY: help install install-plugin install-pymolrc install-skill test \
+        test-integration lint
 
 help:
 	@echo "Targets:"
@@ -35,6 +36,7 @@ help:
 	@echo "  install-pymolrc   Add the auto-start block to ~/.pymolrc.py"
 	@echo "  install-skill     Symlink the PyMOL usage skill into ~/.claude/skills"
 	@echo "  test              Run the test suite"
+	@echo "  test-integration  Run tests against real PyMOL processes (slow)"
 	@echo "  lint              Run ruff"
 	@echo ""
 	@echo "Variables:"
@@ -71,6 +73,10 @@ install-skill:
 
 test:
 	uv run pytest
+
+# Launches real PyMOL instances, so it is minutes not seconds.
+test-integration:
+	uv run pytest -m integration -v
 
 lint:
 	uv run ruff check .
