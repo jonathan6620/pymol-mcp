@@ -91,6 +91,10 @@ class SocketRequest(BaseModel):
     type: Literal["structured_command"] = "structured_command"
     command: str
     args: Dict[str, Any]
+    # The literal PyMOL syntax this command was parsed from. The plugin writes
+    # it to the replayable session script, and uses its absence to tell an
+    # internal call (the connection health-check ping) from a real one.
+    source: Optional[str] = None
 
 
 class SocketResponse(BaseModel):

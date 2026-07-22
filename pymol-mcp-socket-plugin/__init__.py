@@ -13,12 +13,16 @@ import json
 import os
 import socket
 import threading
+import time
 import traceback
+from collections import deque
 
 # Global variables
 dialog = None
 socket_server = None
-received_commands = []
+# Bounded: nothing reads this back, and an unbounded list would grow for the
+# life of the PyMOL process. The on-disk history below is the durable record.
+received_commands = deque(maxlen=200)
 listening = False
 current_port = 9876  # Default port
 _dispatcher = None  # Built lazily on first command
@@ -35,6 +39,123 @@ def _log(message):
     """Print only when PYMOL_MCP_VERBOSE is set -- see the note above."""
     if VERBOSE:
         print(message)
+
+
+##############################################################################
+# COMMAND HISTORY
+##############################################################################
+
+# Commands are written to disk as they run, so a session survives PyMOL exiting
+# or crashing. Two files, because they answer different questions:
+#
+#   history.jsonl   every command with its arguments and outcome, for working
+#                   out what went wrong
+#   session-*.pml   the successful commands only, as literal PyMOL syntax, so
+#                   the session can be replayed with `@session-....pml` or
+#                   pasted into a methods section
+#
+# Set PYMOL_MCP_HISTORY to another directory, or to "off" to disable.
+HISTORY_SETTING = os.environ.get("PYMOL_MCP_HISTORY", "").strip()
+HISTORY_OFF = ("off", "0", "false", "no")
+
+# Commands that touch the filesystem, and the argument holding the path.
+# Recorded absolute: PyMOL resolves a relative path against its own working
+# directory, which cannot be recovered from the history afterwards. `fetch`
+# is not here because its argument is a PDB code, not a path; PyMOL decides
+# where the download lands.
+FILE_ARGS = {
+    "load": ("filename", "in"),
+    "save": ("filename", "out"),
+    "png": ("filename", "out"),
+}
+
+_history_dir = None  # resolved on the first recorded command
+_history_pml = None  # this session's replay script
+_history_lock = threading.Lock()
+_history_broken = False  # set after a write failure; stops retrying
+
+
+def _history_paths():
+    """Resolve and create the history directory. Returns (None, None) if off."""
+    global _history_dir, _history_pml
+
+    if _history_dir is not None:
+        return _history_dir, _history_pml
+    if HISTORY_SETTING.lower() in HISTORY_OFF:
+        return None, None
+
+    directory = HISTORY_SETTING or os.path.join(
+        os.path.expanduser("~"), ".pymol-mcp"
+    )
+    os.makedirs(directory, exist_ok=True)
+
+    pml = os.path.join(directory, "session-%s.pml" % time.strftime("%Y%m%d-%H%M%S"))
+    with open(pml, "a") as fh:
+        fh.write("# pymol-mcp session %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        # Any relative path below was resolved against this directory, so a
+        # replay from elsewhere needs it.
+        fh.write("# PyMOL working directory: %s\n" % os.getcwd())
+        fh.write("# Replay with:  @%s\n\n" % pml)
+
+    _history_dir, _history_pml = directory, pml
+    _log("Recording command history to %s" % directory)
+    return _history_dir, _history_pml
+
+
+def _record_history(command_name, args, source, result):
+    """Append one command to the history files.
+
+    Never raises. A history write failing must not stop PyMOL executing
+    commands, so any error disables recording for the rest of the session
+    rather than propagating to the caller.
+    """
+    global _history_broken
+
+    # No source means an internal call, currently the connection health-check
+    # ping, which is not part of the user's session.
+    if _history_broken or not source:
+        return
+
+    try:
+        with _history_lock:
+            directory, pml = _history_paths()
+            if directory is None:
+                return
+
+            ok = not (isinstance(result, dict) and result.get("executed") is False)
+            record = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "command": command_name,
+                "args": args,
+                "source": source,
+                "ok": ok,
+            }
+            if isinstance(result, dict):
+                detail = result.get("error") if not ok else result.get("output")
+                if detail:
+                    # util.cbc and friends can return a lot; keep the file sane.
+                    record["error" if not ok else "output"] = str(detail)[:2000]
+
+            spec = FILE_ARGS.get(command_name)
+            if spec:
+                arg_name, direction = spec
+                path = args.get(arg_name)
+                if path:
+                    record["file"] = {
+                        "path": os.path.abspath(os.path.expanduser(str(path))),
+                        "direction": direction,
+                    }
+
+            with open(os.path.join(directory, "history.jsonl"), "a") as fh:
+                fh.write(json.dumps(record) + "\n")
+
+            # A failed command would not replay, so keep the script clean.
+            if ok:
+                with open(pml, "a") as fh:
+                    fh.write(source + "\n")
+    except Exception as e:
+        _history_broken = True
+        _log("Command history disabled after a write error: %s" % e)
 
 
 def __init_plugin__(app=None):
@@ -717,10 +838,12 @@ class SocketServer:
         global received_commands
         cmd_name = command.get("command", "")
         args = command.get("args", {})
+        source = command.get("source")
         received_commands.append(f"{cmd_name} {json.dumps(args)}")
 
         if self.command_callback and cmd_name:
             result = self.command_callback(cmd_name, args)
+            _record_history(cmd_name, args, source, result)
             return result
 
     def stop(self):

@@ -866,17 +866,26 @@ class PyMOLConnection:
             finally:
                 self.sock = None
 
-    def send_command(self, command: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    def send_command(
+        self, command: str, args: Dict[str, Any], source: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Sends a structured command to PyMOL via the socket plugin.
         Instead of sending raw code, sends {"type": "structured_command",
         "command": "show", "args": {"representation": "sticks", ...}}.
+
+        `source` is the literal PyMOL syntax the command came from. The plugin
+        records it in its session history. Leave it unset for internal traffic
+        such as the health-check ping, which should not appear in the history.
         """
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to PyMOL")
-        request = SocketRequest(command=command, args=args)
+        request = SocketRequest(command=command, args=args, source=source)
         try:
-            self.sock.sendall(json.dumps(request.model_dump()).encode('utf-8'))
+            # exclude_none keeps the payload byte-identical to before `source`
+            # existed whenever it is unset, so an older plugin sees no change.
+            payload = request.model_dump(exclude_none=True)
+            self.sock.sendall(json.dumps(payload).encode('utf-8'))
             self.sock.settimeout(10.0)
             chunks: list[bytes] = []
             while True:
@@ -1086,7 +1095,11 @@ def parse_and_execute(ctx: Context, user_input: str) -> str:
             results = []
             for color, ss in [("red", "h"), ("yellow", "s"), ("green", "l+")]:
                 ss_sel = f"(ss {ss}) and ({sel})" if sel != "all" else f"ss {ss}"
-                resp = conn.send_command("color", {"color": color, "selection": ss_sel})
+                resp = conn.send_command(
+                    "color",
+                    {"color": color, "selection": ss_sel},
+                    source=f"color {color}, {ss_sel}",
+                )
                 results.append(f"{ss}: {resp.get('status', 'error')}")
             return (
                 f"Colored by secondary structure ({sel}): "
@@ -1097,7 +1110,7 @@ def parse_and_execute(ctx: Context, user_input: str) -> str:
 
     try:
         conn = get_pymol_connection()
-        response = conn.send_command(command_name, args)
+        response = conn.send_command(command_name, args, source=user_input.strip())
         resp = SocketResponse(**response)
         if resp.status == "success":
             res = resp.result
