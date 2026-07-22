@@ -1,9 +1,99 @@
 ---
 name: pymol-mcp
-description: Drive PyMOL through the pymol MCP server. Covers what the command table does and does not accept, selection syntax, splitting DNA from RNA, enumerating chains, labelling, transparency, and verifying a change by rendering. Use whenever calling mcp__pymol__parse_and_execute.
+description: Drive PyMOL through the pymol MCP server. Covers starting PyMOL when nothing is listening on port 9876, what the command table does and does not accept, selection syntax, splitting DNA from RNA, enumerating chains, labelling, transparency, and verifying a change by rendering. Use whenever calling mcp__pymol__parse_and_execute, or when a PyMOL tool call fails to connect.
 ---
 
 # Driving PyMOL through the MCP server
+
+## Starting PyMOL
+
+A tool call failing to connect means nothing is listening on port 9876. Check
+before anything else. This works on every platform, unlike `lsof` or `ss`:
+
+```bash
+python3 -c "import socket;s=socket.socket();s.settimeout(1);print('up' if s.connect_ex(('127.0.0.1',9876))==0 else 'down')"
+```
+
+`up` means PyMOL is running and the fault is elsewhere. **If it is down, ask
+before launching** — PyMOL opens a window on the user's desktop, and they may
+have closed it deliberately or be running it on another machine.
+
+### Launching it
+
+Prefer the user's own launcher, which already has the flags right:
+
+```bash
+type pymolq >/dev/null 2>&1 && pymolq
+```
+
+`pymolq` is a common personal shortcut for `pymol -q "$@" >/dev/null 2>&1 &`.
+It may be a shell function rather than an alias, so `type` is the reliable test.
+Failing that:
+
+| Platform | Command |
+|---|---|
+| macOS / Linux | `pymol -q >/dev/null 2>&1 &` |
+| Windows (cmd) | `start "" pymol.exe -q` |
+| Windows (PowerShell) | `Start-Process pymol -ArgumentList '-q'` |
+
+Three things must be right, and each has bitten someone:
+
+- **Background it.** A foreground `pymol` never returns, so the call blocks
+  until the user closes the window. Even `pymol -h` does this: it opens the GUI
+  instead of printing help.
+- **Discard its output.** PyMOL writes to the terminal it was launched from,
+  which is the terminal Claude Code is drawing in, and it corrupts the display.
+- **Never pass `-c`.** That is headless, so the user sees nothing, which defeats
+  the purpose. `-q` alone keeps the GUI and still loads `~/.pymolrc.py`, which
+  is what starts the socket listener.
+
+### When pymol is not on PATH
+
+Conda installs it inside an environment. Search with Python rather than a shell
+glob: zsh aborts the whole command on the first pattern that matches nothing, so
+an `ls` of several candidate paths finds none of them even when one exists.
+
+```bash
+python3 -c "
+import glob, os
+for pattern in [
+    '~/*conda*/envs/*/bin/pymol', '/opt/*conda*/envs/*/bin/pymol',
+    '/opt/homebrew/Caskroom/*/base/envs/*/bin/pymol',
+    '/usr/local/*conda*/envs/*/bin/pymol',
+    '/Applications/PyMOL.app/Contents/bin/pymol',
+    '~/AppData/Local/*conda*/envs/*/Scripts/pymol.exe',
+    'C:/ProgramData/*conda*/envs/*/Scripts/pymol.exe',
+]:
+    for hit in glob.glob(os.path.expanduser(pattern)):
+        print(hit)
+"
+```
+
+That covers Windows too. `make install PYMOL=/full/path/to/pymol` takes the same
+path if the user needs to reinstall the plugin against it.
+
+### Wait for the listener, do not guess
+
+`~/.pymolrc.py` sleeps 3 seconds before starting the listener, on top of PyMOL's
+own startup, so a fixed `sleep` is either too short or wasteful. Poll:
+
+```bash
+python3 -c "
+import socket, time
+for _ in range(30):
+    s = socket.socket(); s.settimeout(1)
+    if s.connect_ex(('127.0.0.1', 9876)) == 0:
+        print('listening'); break
+    time.sleep(1)
+else:
+    print('timed out')
+"
+```
+
+**Never launch a second PyMOL while one is already listening.** The new
+instance cannot take the port, so its plugin reports `MCP socket listener not
+started` and serves nothing. You would then be driving the *old* instance while
+watching the *new* window, and every command would appear to do nothing.
 
 ## The server is not a natural-language interface
 
