@@ -117,6 +117,11 @@ else:
 "
 ```
 
+The plugin module is loaded into the PyMOL process once. Updating its symlink,
+installer or socket protocol does **not** update a window that is already open;
+restart PyMOL after plugin changes before diagnosing the new client against the
+old in-memory listener.
+
 ## Working with several instances
 
 Each PyMOL claims its own port, so more than one can run at once and you can
@@ -220,6 +225,10 @@ The table has `zoom`, `center`, `orient`, `reset` and `viewport`. Two notes:
   will pad the framing. Hide those first if you want a tight crop.
 - `hide` never recentres anything. Follow a hide with `zoom visible` whenever the
   thing you kept is a small part of the assembly.
+- `orient` uses the coordinates of its selection to calculate principal axes.
+  Duplicate objects, such as separate alternate-conformer overlays, change that
+  calculation and can rotate an otherwise identical scene. Orient the original
+  structure first, then create overlays, and do not call `orient` again.
 
 ## Read the structure file directly
 
@@ -274,6 +283,12 @@ while `history.jsonl` keeps appending. Anything the user did in the GUI is not
 recorded, because it never went through the server, which is another reason a
 replay can diverge from what is on screen.
 
+For a complex figure, keep the successful commands as an ordered reconstruction
+recipe rather than relying on the live window. Include loading, representations,
+colors, object creation, orientation and the final render. This makes recovery
+from an accidentally closed window deterministic; replay broad colors before
+the narrow highlight colors they would otherwise overwrite.
+
 ## Recovering a session that was cleared
 
 If the structure vanishes and you did not load it yourself, you cannot ask PyMOL
@@ -315,6 +330,36 @@ select rna, polymer.nucleic and not resn DA+DC+DG+DT+DI
 
 Both calls return atom counts, so use them as a sanity check. Modified or
 non-standard residues fall on the RNA side, so confirm the counts look sane.
+
+### Showing alternate DNA conformers and their backbones
+
+Alternate locations often share blank-alt atoms and diverge only at `alt A` or
+`alt B`. Build one object from the shared atoms plus each conformer:
+
+```
+create dna_conf_a, polymer.nucleic and not alt B
+create dna_conf_b, polymer.nucleic and not alt A
+hide everything, dna_conf_a
+hide everything, dna_conf_b
+show ribbon, dna_conf_a
+show ribbon, dna_conf_b
+color forest, dna_conf_a
+color yellow, dna_conf_b
+```
+
+Use `ribbon` when the goal is a backbone-only trace over an all-atom line model.
+`cartoon tube` on nucleic acid can add unwanted base ladders. Create these
+objects only after orienting the original structure, as described under
+"Framing the view".
+
+Coloring a whole DNA selection after coloring featured bases will overwrite the
+feature color. Apply conformer/backbone colors first, then recolor and show the
+specific bases as sticks or spheres. Expose recognition residues similarly with
+one atom of backbone context so side chains remain connected:
+
+```
+show sticks, (chain A and resi 278+282+285) and (sidechain or name CA)
+```
 
 ### Negative residue numbers must be escaped
 
