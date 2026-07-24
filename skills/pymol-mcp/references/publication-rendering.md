@@ -87,3 +87,51 @@ PyMOL ray output is raster. An SVG that merely embeds a PNG is not genuinely
 vector geometry and cannot add detail. For scalable delivery, render enough
 pixels for the final physical size or export 3D geometry to an external renderer
 when that workflow is explicitly required.
+
+## Build publication scenes from source
+
+Use a checked-in or delivered `build_figure.pml` as the canonical description
+of a publication scene. Do not make the live GUI or `.pse` the only source of
+truth.
+
+The script should:
+
+1. `reinitialize` to remove inherited state.
+2. Load an explicit absolute PDB/mmCIF path and object name.
+3. Define the molecular subset and all representations.
+4. Apply broad colors before feature-specific colors.
+5. Create curated waters, labels and distance objects.
+6. Set the camera, viewport and rendering controls.
+7. Write a proof, final raster and `.pse`.
+
+Run it with native PyMOL when a session is required:
+
+```text
+pymol -cq /absolute/path/build_figure.pml
+```
+
+For a water-mediated interface, identify crystallographic waters by residue ID
+from the structure or paper. A geometric `solvent within N` query is useful for
+discovery, but is too broad for the final panel. Create each dashed segment
+between the actual donor, water and acceptor atoms, and hide automatic distance
+labels unless the reference includes numerical distances.
+
+Alternate locations can duplicate labels even when the selection names one
+atom. Anchor labels with `not alt B` or the chosen conformer. Keep backbone,
+featured bases and recognition residues in separate selections so changing one
+representation does not expose the entire nucleic acid or protein.
+
+## Verify the complete build
+
+Do not overwrite the last known-good `.pse` until the candidate passes:
+
+1. Check that the proof matches the isolated paper panel.
+2. Open the candidate `.pse` in a fresh native PyMOL process.
+3. Render a second proof from the reopened session.
+4. Compare molecular content, camera and aspect ratio.
+5. Confirm the final PNG dimensions and TIFF conversion.
+
+Use the same viewport aspect ratio for the build and verification render.
+Changing a 6:5 scene to 5:4 after reopening can make a correct saved camera look
+different. File size is only a diagnostic; it does not prove that coordinates
+or representations survived.

@@ -281,6 +281,32 @@ Keep a reconstruction `.pml` and the source coordinate file beside important
 publication sessions. Do not overwrite the last known-good `.pse` until the new
 one passes the fresh-process check.
 
+### Build publication scenes reproducibly
+
+Treat a publication scene as a build, not as mutable GUI state:
+
+```
+source PDB/mmCIF + build_figure.pml -> verified PSE + PNG + TIFF
+```
+
+Start the script with `reinitialize`, load the source coordinates explicitly,
+and include every representation, color, label, contact, camera and render
+command. Run the script with native PyMOL when producing a `.pse`.
+
+For interaction panels:
+
+- Use curated water residue IDs; a broad `solvent within N` selection usually
+  includes irrelevant waters.
+- Draw water-mediated contacts as their actual water-to-water and
+  water-to-atom segments, not one long residue-to-base distance.
+- Keep DNA backbone, featured bases and recognition side chains as separate
+  selections and representations.
+- Add `not alt B` when anchoring labels if alternate conformers are present.
+- Preserve the target panel's aspect ratio when verifying a saved camera.
+
+See [references/publication-rendering.md](references/publication-rendering.md)
+for the complete build and verification sequence.
+
 ## Framing the view
 
 The table has `zoom`, `center`, `orient`, `reset` and `viewport`. Two notes:
