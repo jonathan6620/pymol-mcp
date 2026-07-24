@@ -5,6 +5,23 @@ description: Drive PyMOL through the pymol MCP server. Covers starting PyMOL whe
 
 # Driving PyMOL through the MCP server
 
+## Prefer the MCP control path
+
+Use the typed `mcp__pymol__*` tools directly for discovery, commands, batches,
+camera state and renders. They keep molecular operations inside the plugin's
+allowlisted protocol and avoid unnecessary shell execution and localhost
+sandbox approvals. Do not wrap `parse_and_execute` in `uv run python -c` merely
+to reach the same server when the MCP tools are available.
+
+This preference does not grant general host access. Launching a GUI, reading a
+structure outside allowed filesystem roots, downloading coordinates, or invoking
+native PyMOL may still require host approval. Explain that boundary once if the
+user asks; do not imply the safe MCP command itself is the reason for a prompt.
+
+Use a shell/client fallback only when the MCP tool is unavailable or when
+diagnosing the transport itself. Keep the fallback narrowly scoped to the local
+PyMOL server and return to direct MCP calls afterward.
+
 ## Starting PyMOL
 
 Call `mcp__pymol__list_instances` first. It reports every running PyMOL, so it
@@ -190,6 +207,26 @@ For paper-matched figures, ray-tracing experiments, and publication exports,
 read [references/publication-rendering.md](references/publication-rendering.md)
 before styling or rendering.
 
+For a paper panel, crop or inspect the exact target panel before issuing styling
+commands. Record its composition—camera direction, molecular subset,
+representations, colors, labels, waters and contacts—and reproduce those
+features in low-resolution proofs. A generic view of the right PDB is not a
+figure match. Do not start a 3200-pixel ray render until a 1000–1600-pixel proof
+visually matches the panel's framing and information density.
+
+Set a real viewport before the first proof render. A newly opened or backgrounded
+PyMOL window can retain a tiny viewport; `png width=... height=...` may then
+produce an all-white image or a single-pixel molecule even though atoms are
+loaded:
+
+```
+viewport 1200, 900
+zoom visible
+```
+
+Then render, inspect the image, and only proceed to the expensive publication
+render after the proof has the intended composition.
+
 **Delete named selections before rendering.** A `select` leaves magenta
 indicator dots on every selected atom, and they show up in the ray-traced image
 sitting exactly where the atoms are. Hide a component while its selection still
@@ -217,7 +254,32 @@ select tmp_all, all
 
 A count of `0` means **nothing is loaded** — the session was cleared, and no
 amount of `zoom` or `reset` will help. A non-zero count means the geometry is
-there and the camera is pointed wrong, so `zoom visible` is the fix.
+there. First set a non-trivial `viewport`, then use `zoom visible`; either a
+one-pixel viewport or a bad camera can otherwise look blank.
+
+## Treat `.pse` as a separate deliverable
+
+A successful `save file.pse` response is not proof that the session contains
+coordinates. Verify all three:
+
+1. The file is plausibly sized for the structure.
+2. A fresh PyMOL process can open it.
+3. `list_instances` reports the expected object names and a proof render is
+   non-blank.
+
+If reopening reports no objects, stop resaving the same live state. Export or
+recover the source PDB/mmCIF, rebuild from that source, and create the session
+with native PyMOL. The MCP save wrapper has produced small settings-only `.pse`
+files in practice while still reporting success. A native headless save is a
+valid fallback:
+
+```
+pymol -cq -d "load /abs/model.pdb, model; <styling>; save /abs/model.pse; quit"
+```
+
+Keep a reconstruction `.pml` and the source coordinate file beside important
+publication sessions. Do not overwrite the last known-good `.pse` until the new
+one passes the fresh-process check.
 
 ## Framing the view
 
