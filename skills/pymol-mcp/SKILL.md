@@ -344,6 +344,36 @@ For interaction panels:
 See [references/publication-rendering.md](references/publication-rendering.md)
 for the complete build and verification sequence.
 
+## A selection-scoped `set` is sticky and survives everything
+
+`set <name>, <value>, <selection>` writes a **per-object** setting that lives on
+the atoms, not on the current representation. It is not cleared by `hide`, by
+`show`, by recolouring, or by a later **global** `set <name>, <value>` — global
+and per-object are separate layers, and the per-object one wins.
+
+The one that bites is `cartoon_transparency`. Set it on a selection for one
+close-up:
+
+```
+set cartoon_transparency, 0.75, chain C     # push the RNA back, once
+```
+
+and every later figure of that object renders washed out, with no obvious cause
+— the colours are right, they are just faded. `set cartoon_transparency, 0`
+alone does **not** fix it.
+
+`unset` is not in the command table, so the fix is to overwrite the setting on a
+selection that covers the one that set it:
+
+```
+set cartoon_transparency, 0, <object>
+```
+
+The same is true of `stick_transparency`, `sphere_transparency`,
+`cartoon_tube_radius` and any other per-object setting. If a render is
+inexplicably pale or oddly shaped and the colours are correct, suspect a
+leftover scoped `set` from an earlier view.
+
 ## Fog hides the thing you zoomed in on
 
 PyMOL fades distant geometry by default. On a whole-complex view that reads as
