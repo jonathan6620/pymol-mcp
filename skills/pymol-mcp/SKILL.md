@@ -1,6 +1,6 @@
 ---
 name: pymol-mcp
-description: Drive PyMOL through the pymol MCP server. Covers starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax, splitting DNA from RNA, enumerating chains, labelling, transparency, and verifying a change by rendering. Use whenever calling mcp__pymol__parse_and_execute, or when a PyMOL tool call fails to connect.
+description: Drive PyMOL through the pymol MCP server. Covers the typed tools (get_chains, count, list_residues, contacts, get_gaps, select, apply, render_png, render_movie) and when to prefer them over selection strings, starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax and its silent traps, splitting DNA from RNA, labelling, transparency, rendering stills and animations, and verifying a change by looking at it. Use whenever calling mcp__pymol__* tools, or when a PyMOL tool call fails to connect.
 ---
 
 # Driving PyMOL through the MCP server
@@ -170,12 +170,34 @@ same parser and allowlist to every item and can stop at the first failure.
 - Call `mcp__pymol__list_commands` with a filter before guessing syntax. The
   table is ~80 commands and omits many real PyMOL commands.
 
+### Prefer a typed tool where one exists
+
+Several tools take a `Selector` — fields, not a selection string — and return
+structured data. Reach for them first; they remove whole classes of silent
+mistake documented further down.
+
+| Tool | Answers |
+|---|---|
+| `get_chains` | what is in this object, with spans and gaps |
+| `count` | atoms, residues and chains in a selection |
+| `list_residues` | which residues, as chain/resi/resn |
+| `contacts` | which residues of A are near B |
+| `get_gaps` | what is unmodelled in a chain |
+| `select` | name a selection, and report what it caught |
+| `apply` | colour/show/hide/zoom a typed selection |
+
+A `Selector` takes `object`, `chain`, `residues`, `residue_range`, `molecule`,
+`atom_names`, or `raw` as an escape hatch for anything the model cannot say.
+`raw` is deliberately available — PyMOL's algebra is more expressive than the
+model — but reaching for it puts the traps below back in play.
+
 ### Commands that do NOT exist in the table
 
 | You want | Table has | Use instead |
 |---|---|---|
-| `iterate` / `print` | neither | `select tmp, <sel>`, which returns an atom count |
-| RNA vs DNA selector | neither | residue names, see below |
+| `iterate` / `print` | neither | `mcp__pymol__list_residues`, returning chain/resi/resn |
+| counts | neither | `mcp__pymol__count`, returning atoms, residues and chains |
+| RNA vs DNA selector | neither | `Selector(molecule="rna")`, or residue names by hand |
 
 `bg_color white` works; it used to be missing and need `set bg_rgb, white`.
 
@@ -187,9 +209,10 @@ max` are rejected.
 
 Use `mcp__pymol__get_view` and `mcp__pymol__set_view` to preserve an exact
 camera across experiments or restarts. Use `mcp__pymol__get_setting` to inspect
-one named setting. The server still cannot enumerate arbitrary atom properties;
-use `select` for counts, parse the structure file for inventories, and inspect a
-render for visual state.
+one named setting. The server still cannot enumerate arbitrary atom
+properties, but the typed tools cover the common questions: `count`,
+`list_residues`, `get_chains`, `get_gaps` and `contacts` all return structured
+data. Inspect a render for visual state.
 
 ## Always verify by rendering
 
@@ -436,6 +459,10 @@ expression evaluates to. `byres A and name C1'` is not "expand A to residues,
 then keep the C1′ atoms" — it is `byres (A and name C1')`, "expand to whole
 residues those atoms that are both in A and named C1′".
 
+`mcp__pymol__contacts` avoids this entirely: it always returns whole residues,
+and you narrow the question with `atom_names` in the selector rather than by
+operator placement. What follows matters when writing selections by hand.
+
 The two readings give genuinely different answers, and both look reasonable:
 
 ```
@@ -486,6 +513,10 @@ show sticks, (chain A and resi 278+282+285) and (sidechain or name CA)
 
 ### Negative residue numbers must be escaped
 
+Anything going through a `Selector` is safe: `ResidueRange(start=-12, end=-8)`
+renders the escaping correctly, including both endpoints. The rest of this
+section matters when writing `resi` by hand.
+
 `resi` treats `-` as a range operator, so a negative residue number is silently
 read as an open-ended range instead: `resi -12` means "everything up to 12", not
 "residue −12". It does not error — it just selects far too much. Escape the
@@ -524,26 +555,27 @@ and is not.
 
 ## Enumerating and colouring chains
 
-`util.cbc <sel>` colours by chain **and prints the chain IDs it found**. That is
-the only way to enumerate chains through this server:
+`mcp__pymol__get_chains` returns every chain with its molecule type, atom and
+residue counts, numbering span and gaps:
 
 ```
-util.cbc dna
-  -> util.cbc: color 26, (chain D)
-     util.cbc: color 5, (chain E)
-     ...
+A protein 4900 atoms  602 res    5..606   no gaps
+C rna    13792 atoms  643 res    1..957   6 gaps
+D dna      489 atoms   24 res  -13..22    1 gap
+F ligand     2 atoms
 ```
 
-But `util.cbc` colours **carbons only**, which looks wrong on cartoon. Use it to
-discover chains, then override with explicit per-chain colours:
+That replaces the old trick of running `util.cbc` for the chain IDs it happens
+to print while recolouring, then undoing its colours. It also reports gaps,
+which no command could previously reveal -- a nicked chain is still one chain,
+and the break shows up only in the numbering.
+
+Colour per chain explicitly once you know what is there:
 
 ```
 color red, dna and chain D
 color marine, dna and chain E
 ```
-
-Caveat: chain is the strand unit. A nicked chain won't be split, and you cannot
-detect gaps with the available commands.
 
 ## Showing protein as context without hiding what's inside it
 
@@ -587,6 +619,27 @@ set label_position, (3,3,3)
 set label_connector, on
 set label_outline_color, white
 ```
+
+## Animations
+
+`mcp__pymol__render_movie` returns an animated GIF as an image block, so it
+appears inline. MCP has no video content type; a GIF is an image, which is the
+whole reason this works. Pass a `.webp` filename for much better compression if
+the client renders animated WebP.
+
+```
+render_movie(filename="/tmp/spin.gif", mode="spin", frames=24, width=480)
+render_movie(filename="/tmp/traj.gif", mode="states", frames=20, start_state=1)
+```
+
+`mode="spin"` turns the camera a full 360° about `axis`; `mode="states"` steps
+through object states, for trajectories and NMR ensembles.
+
+Defaults are small and un-raytraced on purpose. A ray-traced frame takes
+seconds, so `ray=True` with 24 frames is a minute of waiting — worth it for a
+final, not for a look. Caps apply at 120 frames, 4 MP per frame and 8 MB
+encoded; when one bites, the metadata says so in `truncated`, `dropped_frames`
+and `note` rather than quietly returning a shorter movie.
 
 ## Housekeeping
 

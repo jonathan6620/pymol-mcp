@@ -1,6 +1,8 @@
 # Design: a typed facade over the command table
 
-Status: proposal, no code written.
+Status: **implemented**, stages 0-5, commits b683430 through this one.
+Kept as the record of why the design is shaped this way. Two things changed
+under contact with the code -- see "What changed in implementation" at the end.
 
 ## The problem
 
@@ -306,3 +308,38 @@ Model-level tests (`ResidueRange.to_selection()` escaping both endpoints,
    structure-specific skill — chain-letter collisions between files, numbering
    offsets, which model is a hybrid. Those are data semantics and no API fixes
    them.
+
+
+## What changed in implementation
+
+Two departures from the proposal above, both found by verifying against a real
+structure rather than by reasoning.
+
+**`contacts` lost its `whole_residues` flag.** The proposal made it the typed
+form of where `byres` goes in a string. In practice it was a no-op: the tool
+returns residues, so collapsing atoms to residues erases the distinction and
+both settings returned the same 30. The real difference is *which atom* you are
+asking about, so `Selector` gained `atom_names` instead. On the test complex,
+RNA chain C within 4 A of DNA is 30 residues unrestricted and 4 restricted to
+`C1'` -- the two readings of `byres A and name C1'`, now distinguished by the
+selection rather than by operator placement.
+
+**Effects became two tools, not five.** `apply(command, selection, value)` and
+`select(name, selection)` rather than typed wrappers per command. The typed
+value is the same `Selector` argument every time, so per-command tools would
+have added surface without expressiveness.
+
+Also worth recording, because both cost time:
+
+- `execute_structured_command` stringified every handler return, so structured
+  data arrived as a Python repr for the server to parse -- exactly the string
+  round-trip this design exists to remove. Structured results now travel in a
+  `data` field.
+- `cmd.iterate` echoes the value of each evaluated expression. A handler using
+  `dict.setdefault(...)` printed once per atom and buried its own result under
+  tens of thousands of lines. The expression must be an assignment.
+
+The testing note above proved accurate: `conftest` stubbing FastMCP means
+`@mcp.tool()` replaces a function with a `MagicMock`, so any test calling a
+decorated tool exercises nothing. Implementations are private, with thin
+decorated wrappers, following the existing `_render_png`/`render_png` split.
