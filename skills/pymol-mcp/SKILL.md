@@ -429,6 +429,31 @@ select rna, polymer.nucleic and not resn DA+DC+DG+DT+DI
 Both calls return atom counts, so use them as a sanity check. Modified or
 non-standard residues fall on the RNA side, so confirm the counts look sane.
 
+### `byres` swallows the rest of the expression
+
+`byres` binds looser than `and`, so it expands whatever the *whole* remaining
+expression evaluates to. `byres A and name C1'` is not "expand A to residues,
+then keep the C1′ atoms" — it is `byres (A and name C1')`, "expand to whole
+residues those atoms that are both in A and named C1′".
+
+The two readings give genuinely different answers, and both look reasonable:
+
+```
+select t, byres (chain C within 4 of chain E) and name C1'      -> 89 atoms, 4 residues
+select t, (byres (chain C within 4 of chain E)) and name C1'    -> 30 atoms, 30 residues
+```
+
+The first asks "which residues have their C1′ specifically within 4 Å" — four
+of them, then shows every atom of those four. The second asks "which residues
+have *any* atom within 4 Å" — thirty — then takes one atom each. If you are
+counting residues at an interface, you almost always want the second, so
+parenthesise the `byres` group explicitly.
+
+This bites hardest when the count is the answer. Both forms return a plausible
+number, neither errors, and the difference between 4 and 30 can invert a
+structural conclusion. The same applies to `bychain`, `bymolecule` and
+`byobject`.
+
 ### Showing alternate DNA conformers and their backbones
 
 Alternate locations often share blank-alt atoms and diverge only at `alt A` or
@@ -482,6 +507,20 @@ select cww, chain E and resi \-12+\-11+\-10+1+2
 Because the failure is silent, always check the returned atom count against
 what you expect (roughly 20 atoms per nucleotide, 8 per amino acid) before
 acting on a selection with negative numbering in it.
+
+A range needs a backslash on **every endpoint that is negative**, not just the
+first. Escaping only the low end leaves the second minus reading as the range
+operator again, and the result is silently far too wide:
+
+```
+select t, chain E and resi \-12--8    -> 409    wrong, about 20 nucleotides
+select t, chain E and resi \-12-\-8   -> 104    correct, 5 nucleotides
+select t, chain E and resi \-5-1      -> 119    correct, high end is positive
+```
+
+The middle form is the one to write when both ends are negative. It reads
+badly — `\-12-\-8` — but the alternative is a selection that looks plausible
+and is not.
 
 ## Enumerating and colouring chains
 
