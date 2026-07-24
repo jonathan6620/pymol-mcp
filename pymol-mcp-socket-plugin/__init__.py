@@ -265,6 +265,16 @@ def execute_structured_command(command_name, args):
 
         output = output_buffer.getvalue()
 
+        # Introspection handlers return JSON-serialisable structures. They go
+        # back in their own field, untouched: str(result) would hand the server
+        # a Python repr to parse, which is precisely the string round-trip the
+        # typed tools exist to remove.
+        if isinstance(result, (dict, list)):
+            payload = {"executed": True, "data": result}
+            if output:
+                payload["output"] = output
+            return payload
+
         if output:
             _log(f"Command output: {output}")
             return {"executed": True, "output": output}
@@ -1012,8 +1022,175 @@ def build_command_dispatcher(cmd):
             return cmd.help(command)
         return cmd.help()
 
+    ##########################################################################
+    # INTROSPECTION
+    #
+    # These return structured data rather than acting on the view, and exist
+    # because the alternative is asking a caller to infer facts from side
+    # effects: counting atoms by reading a `select` reply, or discovering chain
+    # IDs from what `util.cbc` happens to print while recolouring the object.
+    #
+    # None of them evaluates a caller-supplied expression. They read fixed atom
+    # properties into plain Python and return it, which is what keeps them
+    # outside check_atom_expression's remit and preserves the no-exec property
+    # of the dispatcher.
+    ##########################################################################
+
+    DNA_RESN = {"DA", "DC", "DG", "DT", "DI"}
+    PROTEIN_ATOM = {"CA", "N", "C", "O"}
+
+    def _residue_index(selection):
+        """Map (chain, resi) -> resn for every residue in a selection.
+
+        The expression must be an assignment, not `seen.setdefault(...)`.
+        cmd.iterate echoes the value of each evaluated expression, so a call
+        that returns something prints once per atom -- tens of thousands of
+        lines that then swamp the captured output the handler's real result
+        travels in. Assignment evaluates to nothing and stays silent.
+        """
+        seen = {}
+        cmd.iterate(
+            selection,
+            "seen[(chain, int(resv))] = resn",
+            space={"seen": seen, "int": int},
+        )
+        return seen
+
+    def _classify(resn_set, has_ca):
+        if not resn_set:
+            return "empty"
+        nucleic = {"A", "C", "G", "U"} | DNA_RESN
+        if resn_set <= DNA_RESN:
+            return "dna"
+        if resn_set <= nucleic:
+            return "rna" if not (resn_set & DNA_RESN) else "mixed"
+        if resn_set == {"HOH"}:
+            return "solvent"
+        if has_ca:
+            return "protein"
+        if len(resn_set) <= 2:
+            return "ligand"
+        return "mixed"
+
+    def _gaps_from(numbers):
+        ordered = sorted(numbers)
+        return [
+            [a + 1, b - 1]
+            for a, b in zip(ordered, ordered[1:])
+            if b > a + 1
+        ]
+
+    def _get_chains(args):
+        obj = args.get("object") or "all"
+        out = []
+        for chain in cmd.get_chains(obj):
+            sel = f"({obj}) and chain {chain}"
+            index = _residue_index(sel)
+            numbers = [resi for (_, resi) in index]
+            resns = set(index.values())
+            has_ca = cmd.count_atoms(f"{sel} and name CA") > 0
+            out.append(
+                {
+                    "chain": chain,
+                    "kind": _classify(resns, has_ca),
+                    "atoms": cmd.count_atoms(sel),
+                    "residues": len(index),
+                    "first": min(numbers) if numbers else None,
+                    "last": max(numbers) if numbers else None,
+                    "gaps": _gaps_from(numbers),
+                }
+            )
+        return {"object": obj, "chains": out}
+
+    def _count(args):
+        sel = args.get("selection") or "all"
+        index = _residue_index(sel)
+        return {
+            "selection": sel,
+            "atoms": cmd.count_atoms(sel),
+            "residues": len(index),
+            "chains": len({chain for (chain, _) in index}),
+        }
+
+    def _list_residues(args):
+        sel = args.get("selection") or "all"
+        limit = int(args.get("limit", 5000))
+        index = _residue_index(sel)
+        ordered = sorted(index.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+        truncated = len(ordered) > limit
+        return {
+            "selection": sel,
+            "residues": [
+                {"chain": chain, "resi": resi, "resn": resn}
+                for (chain, resi), resn in ordered[:limit]
+            ],
+            "truncated": truncated,
+        }
+
+    def _contacts(args):
+        """Residues of `selection` near `near`.
+
+        Narrowing happens in `selection` -- restrict it to named atoms to ask
+        "residues whose CA is in range" rather than "residues with any atom in
+        range". Writing that by hand is where `byres` placement silently
+        changes the meaning.
+        """
+        sel = args.get("selection")
+        near = args.get("near")
+        if not sel or not near:
+            raise ValueError("contacts requires both 'selection' and 'near'")
+        try:
+            within = float(args.get("within", 4.0))
+        except (TypeError, ValueError):
+            raise ValueError("'within' must be a number")
+        if not 0 < within <= 50:
+            raise ValueError("'within' must be between 0 and 50 angstroms")
+        # Always expand to whole residues: the return is a residue list, so
+        # collapsing atoms to residues erases any difference a non-expanded
+        # shell would have made. Callers narrow the question through the
+        # selection's atom names instead.
+        target = f"byres (({sel}) within {within} of ({near}))"
+        index = _residue_index(target)
+        ordered = sorted(index.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+        return {
+            "selection": target,
+            "residues": [
+                {"chain": chain, "resi": resi, "resn": resn}
+                for (chain, resi), resn in ordered
+            ],
+            "truncated": False,
+        }
+
+    def _get_gaps(args):
+        obj = args.get("object") or "all"
+        chain = args.get("chain")
+        sel = f"({obj}) and chain {chain}" if chain else f"({obj})"
+        index = _residue_index(sel)
+        numbers = sorted(resi for (_, resi) in index)
+        return {
+            "object": obj,
+            "chain": chain or "",
+            "first": numbers[0] if numbers else None,
+            "last": numbers[-1] if numbers else None,
+            "modelled": len(numbers),
+            "gaps": _gaps_from(numbers),
+        }
+
+    def _enable(args):
+        return cmd.enable(args.get("name", "all"))
+
+    def _disable(args):
+        return cmd.disable(args.get("name", "all"))
+
     # Build the dispatcher — only these commands are allowed
     dispatcher = {
+        "get_chains": _get_chains,
+        "count": _count,
+        "list_residues": _list_residues,
+        "contacts": _contacts,
+        "get_gaps": _get_gaps,
+        "enable": _enable,
+        "disable": _disable,
         "show": _show,
         "hide": _hide,
         "color": _color,

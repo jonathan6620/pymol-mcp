@@ -16,7 +16,15 @@ from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel
 
-from pymol_mcp.api import MovieMeta, RenderMeta
+from pymol_mcp.api import (
+    Chains,
+    Counts,
+    Gaps,
+    MovieMeta,
+    RenderMeta,
+    ResidueList,
+    Selector,
+)
 from pymol_mcp.models import (
     CommandDef,
     ErrorCategory,
@@ -29,6 +37,15 @@ from pymol_mcp.models import (
 ##############################################################################
 # PYMOL COMMAND DEFINITIONS AND ERROR PATTERNS
 ##############################################################################
+
+# Plugin commands that are not PyMOL commands. They return structured data and
+# are reached through typed tools, so they are deliberately absent from
+# PYMOL_COMMANDS -- there is no string syntax for them and parse_and_execute
+# should not offer one. The server/plugin sync check knows about this set.
+INTROSPECTION_COMMANDS = frozenset(
+    {"get_chains", "count", "list_residues", "contacts", "get_gaps"}
+)
+
 
 PYMOL_COMMANDS: dict[str, CommandDef] = {
     # MOLECULAR VISUALIZATION
@@ -385,6 +402,22 @@ PYMOL_COMMANDS: dict[str, CommandDef] = {
         pattern=r"^delete\s+(.+)$",
         parameters=[
             ParameterDef(name="name", required=True),
+        ],
+        check_selection=False,
+    ),
+    "enable": CommandDef(
+        description="Makes an object or selection visible again",
+        pattern=r"^enable(?:\s+(.+))?$",
+        parameters=[
+            ParameterDef(name="name", required=False, default="all"),
+        ],
+        check_selection=False,
+    ),
+    "disable": CommandDef(
+        description="Hides an object or selection without deleting it",
+        pattern=r"^disable(?:\s+(.+))?$",
+        parameters=[
+            ParameterDef(name="name", required=False, default="all"),
         ],
         check_selection=False,
     ),
@@ -1570,6 +1603,137 @@ def _image_result(
         ],
         structuredContent=meta.model_dump(mode="json"),
     )
+
+
+##############################################################################
+# INTROSPECTION TOOLS
+#
+# These answer questions instead of changing the view. Each replaces a
+# workaround the untyped path forced on callers: reading atom counts out of a
+# `select` reply, discovering chain IDs from what `util.cbc` prints while
+# recolouring, or getting `byres` placement right in a string.
+##############################################################################
+
+
+def _introspect(command: str, args: dict[str, Any], instance: int | None) -> Any:
+    """Send an introspection command and return its structured payload."""
+    response = get_pymol_connection(instance).send_command(
+        command, args, source=f"{command} {args}"
+    )
+    if response.get("status") != "success":
+        raise RuntimeError(response.get("message") or f"{command} failed")
+    result = response.get("result")
+    if isinstance(result, dict):
+        if not result.get("executed", True):
+            raise RuntimeError(result.get("error") or f"{command} failed")
+        # Structured handlers answer in "data". A plugin old enough to predate
+        # that field stringifies its return into "output" instead, which cannot
+        # be recovered -- say so rather than failing on a confusing type error.
+        if "data" in result:
+            result = result["data"]
+        elif "output" in result:
+            raise RuntimeError(
+                f"{command} came back as text, not structured data. The "
+                "installed socket plugin is older than this server: run "
+                "`make install-plugin` and restart PyMOL."
+            )
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{command} returned no structured result: {result!r}")
+    return result
+
+
+@mcp.tool()
+def get_chains(
+    ctx: Context, object: str = "all", instance: int | None = None
+) -> Chains:
+    """List every chain with its molecule type, size, span and numbering gaps.
+
+    Use this instead of `util.cbc`, which reveals chain IDs only as a side
+    effect of recolouring the object.
+    """
+    return Chains.model_validate(
+        _introspect("get_chains", {"object": object}, instance)
+    )
+
+
+@mcp.tool()
+def count(ctx: Context, selection: Selector, instance: int | None = None) -> Counts:
+    """Count atoms, residues and chains in a selection."""
+    return Counts.model_validate(
+        _introspect("count", {"selection": selection.to_selection()}, instance)
+    )
+
+
+@mcp.tool()
+def list_residues(
+    ctx: Context,
+    selection: Selector,
+    limit: int = 5000,
+    instance: int | None = None,
+) -> ResidueList:
+    """List the residues in a selection as chain/resi/resn records.
+
+    The command table has no `iterate`, so this is the way to get residue
+    identities back rather than inferring them from counts.
+    """
+    return ResidueList.model_validate(
+        _introspect(
+            "list_residues",
+            {"selection": selection.to_selection(), "limit": limit},
+            instance,
+        )
+    )
+
+
+@mcp.tool()
+def contacts(
+    ctx: Context,
+    selection: Selector,
+    near: Selector,
+    within: float = 4.0,
+    instance: int | None = None,
+) -> ResidueList:
+    """Residues of `selection` with an atom within `within` angstroms of `near`.
+
+    Narrow `selection.atom_names` to ask the narrower question. On a
+    protein/RNA/DNA complex, RNA chain C within 4 A of the DNA gives 30
+    residues unrestricted, but 4 when restricted to ["C1'"] -- because only
+    four residues have *that* atom in range.
+
+    Writing this by hand is where `byres` bites: `byres A and name C1'` parses
+    as `byres (A and name C1')`, so it silently answers the second question
+    when the first was meant. Here the two are different selectors, and neither
+    depends on operator placement.
+    """
+    return ResidueList.model_validate(
+        _introspect(
+            "contacts",
+            {
+                "selection": selection.to_selection(),
+                "near": near.to_selection(),
+                "within": within,
+            },
+            instance,
+        )
+    )
+
+
+@mcp.tool()
+def get_gaps(
+    ctx: Context,
+    object: str = "all",
+    chain: str | None = None,
+    instance: int | None = None,
+) -> Gaps:
+    """Report unmodelled stretches in a chain's residue numbering.
+
+    Chain breaks matter for cartoon rendering and for knowing what is missing
+    from a model; previously they meant parsing the structure file by hand.
+    """
+    args: dict[str, Any] = {"object": object}
+    if chain:
+        args["chain"] = chain
+    return Gaps.model_validate(_introspect("get_gaps", args, instance))
 
 
 ##############################################################################

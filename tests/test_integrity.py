@@ -7,6 +7,7 @@ import pytest
 from conftest import PLUGIN_PATH, REPO_ROOT
 
 from pymol_mcp.server import (
+    INTROSPECTION_COMMANDS,
     PYMOL_COMMANDS,
 )
 
@@ -21,15 +22,23 @@ class TestServerPluginSync:
 
     @pytest.fixture
     def plugin_dispatcher_commands(self):
-        """Parse the plugin __init__.py to extract dispatcher keys."""
-        plugin_path = PLUGIN_PATH
-        with open(plugin_path) as f:
-            source = f.read()
+        """Parse the plugin __init__.py to extract dispatcher keys.
+
+        Scoped to the `dispatcher = {...}` literal rather than the whole file.
+        Scanning everything matched `"gaps": _gaps_from(...)` and similar
+        dict literals inside handler bodies, and reported them as commands the
+        server was missing.
+        """
+        source = PLUGIN_PATH.read_text()
+
+        start = source.index("dispatcher = {")
+        end = source.index("\n    }", start)
+        block = source[start:end]
 
         commands = set()
 
-        # Extract dispatcher dict keys
-        for match in re.finditer(r'"(\w[\w.]*)":\s*_\w+', source):
+        # Dispatcher dict keys, e.g.  "show": _show,
+        for match in re.finditer(r'"(\w[\w.]*)":\s*_\w+', block):
             commands.add(match.group(1))
 
         # Extract util_commands list entries
@@ -52,8 +61,14 @@ class TestServerPluginSync:
             )
 
     def test_plugin_commands_exist_in_server(self, plugin_dispatcher_commands):
-        """Every plugin dispatcher command should be defined in the server."""
-        server_commands = set(PYMOL_COMMANDS.keys())
+        """Every plugin dispatcher command should be known to the server.
+
+        Introspection commands are handled by typed tools rather than the regex
+        table, so they are legitimately absent from PYMOL_COMMANDS -- but they
+        still have to be declared, so a handler cannot be added to the plugin
+        without the server knowing it exists.
+        """
+        server_commands = set(PYMOL_COMMANDS.keys()) | set(INTROSPECTION_COMMANDS)
         extra = []
         for cmd in plugin_dispatcher_commands:
             if cmd not in server_commands:
@@ -71,6 +86,24 @@ class TestServerPluginSync:
             pytest.fail(
                 f"Deprecated/broken util commands still in plugin dispatcher: {present}"
             )
+
+    def test_introspection_commands_are_not_in_the_regex_table(self):
+        """They have no string syntax, so parse_and_execute must not offer one.
+
+        If one leaked into PYMOL_COMMANDS it would be advertised by
+        list_commands with a pattern nobody can satisfy usefully, and callers
+        would be pushed back to string-building for exactly the operations the
+        typed tools exist to replace.
+        """
+        overlap = set(INTROSPECTION_COMMANDS) & set(PYMOL_COMMANDS)
+        assert not overlap, f"introspection commands leaked into the table: {overlap}"
+
+    def test_every_introspection_command_has_a_plugin_handler(
+        self, plugin_dispatcher_commands
+    ):
+        missing = set(INTROSPECTION_COMMANDS) - plugin_dispatcher_commands
+        assert not missing, f"declared but not implemented in the plugin: {missing}"
+
 
 
 # ============================================================================

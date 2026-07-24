@@ -116,3 +116,24 @@ class TestResultModels:
     def test_counts_round_trip(self):
         c = Counts(selection="polymer.protein", atoms=4900, residues=602, chains=1)
         assert c.model_dump(mode="json")["atoms"] == 4900
+
+
+class TestAtomNames:
+    """The atom-name filter is what makes a contact question precise.
+
+    Restricting to one atom is the difference between "residues with any atom
+    in range" and "residues whose C1' is in range" -- 30 versus 4 on the test
+    complex. Writing it by hand is where `byres` placement silently flips the
+    meaning, so it belongs in the selector.
+    """
+
+    def test_atom_names_render(self):
+        sel = Selector(chain="C", atom_names=["C1'"]).to_selection()
+        assert sel == "(chain C) and (name C1')"
+
+    def test_multiple_atom_names_joined_with_plus(self):
+        sel = Selector(atom_names=["CA", "N", "C"]).to_selection()
+        assert sel == "name CA+N+C"
+
+    def test_atom_names_alone_is_not_an_empty_selector(self):
+        assert Selector(atom_names=["CA"]).to_selection() == "name CA"

@@ -89,6 +89,15 @@ class Selector(BaseModel):
     residues: list[int] | None = None
     residue_range: ResidueRange | None = None
     molecule: Molecule | None = None
+    atom_names: list[str] | None = Field(
+        default=None,
+        description=(
+            "Restrict to named atoms, e.g. [\"CA\"] or [\"C1'\"]. This is what "
+            "distinguishes 'residues whose backbone atom is in range' from "
+            "'residues with any atom in range' -- a difference that is easy to "
+            "get wrong when writing selections by hand."
+        ),
+    )
     raw: str | None = Field(
         default=None,
         description=(
@@ -110,6 +119,7 @@ class Selector(BaseModel):
                 self.residues,
                 self.residue_range,
                 self.molecule,
+                self.atom_names,
             )
         ):
             raise ValueError(
@@ -134,8 +144,13 @@ class Selector(BaseModel):
             parts.append(self.residue_range.to_selection())
         if self.molecule:
             parts.append(self.molecule.to_selection())
-        # Parenthesise multi-token clauses so the result composes safely when a
-        # caller wraps it in a larger expression.
+        if self.atom_names:
+            parts.append("name " + "+".join(self.atom_names))
+        # Parenthesise multi-token clauses so the result composes safely once
+        # more than one is joined. A lone clause needs no wrapping, and adding
+        # it only makes the selection harder to read back.
+        if len(parts) == 1:
+            return parts[0]
         return " and ".join(f"({p})" if " " in p else p for p in parts)
 
 
