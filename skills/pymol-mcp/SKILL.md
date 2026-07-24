@@ -344,6 +344,21 @@ For interaction panels:
 See [references/publication-rendering.md](references/publication-rendering.md)
 for the complete build and verification sequence.
 
+## Fog hides the thing you zoomed in on
+
+PyMOL fades distant geometry by default. On a whole-complex view that reads as
+depth; on a close-up it silently deletes context — a neighbouring domain can
+wash out to near-white and look absent rather than distant.
+
+```
+set depth_cue, 0
+set ray_trace_fog, 0
+```
+
+Turn both off for any zoomed figure, then decide whether you want the fade
+back. The failure is easy to misread as a colouring mistake: the geometry is
+there, correctly coloured, and simply not visible.
+
 ## Framing the view
 
 The table has `zoom`, `center`, `orient`, `reset` and `viewport`. Two notes:
