@@ -173,6 +173,86 @@ class TestServerModuleIntegrity:
             "The mcp package API may have changed again."
         )
 
+    def test_render_png_does_not_declare_structured_output(self):
+        """render_png must not build a pydantic output model.
+
+        It returns [str, Image]. When FastMCP derives an output model from the
+        return annotation it serialises the result through pydantic, which
+        cannot encode an Image, and every call fails with
+        PydanticSerializationError. Annotating the return as list[ContentBlock]
+        does not help either -- the str and Image are then rejected by output
+        validation instead. The fix is structured_output=False on the decorator.
+
+        Subprocess, because conftest replaces the whole mcp package with a
+        MagicMock in-process, so the decorator's real behaviour is invisible to
+        every other test in the suite.
+        """
+        import subprocess
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from pymol_mcp.server import mcp; "
+                "tool = mcp._tool_manager.get_tool('render_png'); "
+                "print(f'output_schema={tool.fn_metadata.output_schema}')"
+            ],
+            capture_output=True, text=True,
+            cwd=str(REPO_ROOT),
+        )
+        assert result.returncode == 0, (
+            f"Failed to inspect render_png:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "output_schema=None" in result.stdout, (
+            "render_png declares a structured output schema. Returning an Image "
+            "through it raises PydanticSerializationError at call time. Keep "
+            "structured_output=False on the @mcp.tool decorator."
+        )
+
+    def test_render_png_result_converts_to_image_content(self, tmp_path):
+        """A [str, Image] return must reach the client as text + image blocks."""
+        import struct
+        import subprocess
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            checksum = zlib.crc32(kind)
+            checksum = zlib.crc32(data, checksum) & 0xFFFFFFFF
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+
+        png_path = tmp_path / "render.png"
+        png_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 640, 480, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", b"")
+            + chunk(b"IEND", b"")
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "import sys; "
+                "from pymol_mcp.server import mcp; "
+                "from mcp.server.fastmcp.utilities.types import Image; "
+                "tool = mcp._tool_manager.get_tool('render_png'); "
+                "blocks = tool.fn_metadata.convert_result("
+                "    ['Rendered render.png (640x480, 300 DPI, ray=on)', "
+                "     Image(path=sys.argv[1])]); "
+                "print('kinds=' + ','.join(type(b).__name__ for b in blocks)); "
+                "print('mime=' + blocks[1].mimeType); "
+                "print('has_data=' + str(bool(blocks[1].data)))",
+                str(png_path),
+            ],
+            capture_output=True, text=True,
+            cwd=str(REPO_ROOT),
+        )
+        assert result.returncode == 0, (
+            f"render_png result conversion failed:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "kinds=TextContent,ImageContent" in result.stdout
+        assert "mime=image/png" in result.stdout
+        assert "has_data=True" in result.stdout
+
     def test_parse_and_execute_tool_registered(self):
         """The parse_and_execute function should be registered as an MCP tool."""
         import subprocess

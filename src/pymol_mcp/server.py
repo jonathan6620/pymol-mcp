@@ -1539,7 +1539,13 @@ def _render_png(
     ]
 
 
-@mcp.tool()
+# structured_output=False is required, not stylistic. FastMCP builds an output
+# model from the return annotation and serialises the result through pydantic,
+# which cannot encode an Image and fails the whole call. Annotating the return
+# as list[ContentBlock] does not help -- the str and Image are then rejected by
+# validation instead. Suppressing the output model routes the result through
+# _convert_to_content, which knows how to turn Image into ImageContent.
+@mcp.tool(structured_output=False)
 def render_png(
     ctx: Context,
     filename: str,
