@@ -202,6 +202,55 @@ class Gaps(BaseModel):
     gaps: list[tuple[int, int]] = Field(default_factory=list)
 
 
+class SecondaryStructureRun(BaseModel):
+    chain: str
+    ss: Literal["H", "S", "L"]
+    start: int
+    end: int
+    length: int
+
+
+class ResidueSS(BaseModel):
+    chain: str
+    resi: int
+    ss: Literal["H", "S", "L"]
+
+
+class SecondaryStructure(BaseModel):
+    selection: str
+    residues: list[ResidueSS]
+    runs: list[SecondaryStructureRun]
+    helix: int
+    sheet: int
+    loop: int
+    pattern: str = Field(
+        description="Run-length summary, e.g. '22H3L15H' for helix-turn-helix."
+    )
+
+
+class ChainSequence(BaseModel):
+    chain: str
+    first: int
+    last: int
+    seq: str
+
+
+class Sequence(BaseModel):
+    selection: str
+    chains: list[ChainSequence]
+
+
+class Measurement(BaseModel):
+    selection1: str
+    selection2: str
+    distance: float
+
+
+class ClearedSelections(BaseModel):
+    deleted: list[str]
+    count: int
+
+
 class RenderMeta(BaseModel):
     """Metadata for a rendered still. The image itself travels as ImageContent."""
 

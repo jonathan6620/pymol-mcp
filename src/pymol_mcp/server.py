@@ -18,12 +18,16 @@ from pydantic import BaseModel
 
 from pymol_mcp.api import (
     Chains,
+    ClearedSelections,
     Counts,
     Gaps,
+    Measurement,
     MovieMeta,
     RenderMeta,
     ResidueList,
+    SecondaryStructure,
     Selector,
+    Sequence,
 )
 from pymol_mcp.models import (
     CommandDef,
@@ -43,7 +47,17 @@ from pymol_mcp.models import (
 # PYMOL_COMMANDS -- there is no string syntax for them and parse_and_execute
 # should not offer one. The server/plugin sync check knows about this set.
 INTROSPECTION_COMMANDS = frozenset(
-    {"get_chains", "count", "list_residues", "contacts", "get_gaps"}
+    {
+        "get_chains",
+        "count",
+        "list_residues",
+        "contacts",
+        "get_gaps",
+        "get_secondary_structure",
+        "get_sequence",
+        "measure",
+        "clear_selections",
+    }
 )
 
 
@@ -1734,6 +1748,82 @@ def get_gaps(
     if chain:
         args["chain"] = chain
     return Gaps.model_validate(_introspect("get_gaps", args, instance))
+
+
+@mcp.tool()
+def get_secondary_structure(
+    ctx: Context, selection: Selector, instance: int | None = None
+) -> SecondaryStructure:
+    """Read secondary structure per residue, plus a run-length summary.
+
+    Returns `pattern` like `22H3L15H`, which is what tells you an element is a
+    helix-turn-helix rather than simply 37 helical residues.
+
+    Loops come back as `L`. PyMOL itself stores loop as an empty value, which
+    is why `ss L` in a hand-written selection silently matches nothing; that is
+    normalised here.
+    """
+    return SecondaryStructure.model_validate(
+        _introspect(
+            "get_secondary_structure",
+            {"selection": selection.to_selection()},
+            instance,
+        )
+    )
+
+
+@mcp.tool()
+def get_sequence(
+    ctx: Context, selection: Selector, instance: int | None = None
+) -> Sequence:
+    """One-letter sequence per chain, with its first and last residue number.
+
+    Locating a motif by sequence -- a catalytic `YADD`, a `PQGGIISP` -- and
+    converting the hit back to residue numbers otherwise means reading the
+    structure file outside PyMOL.
+    """
+    return Sequence.model_validate(
+        _introspect("get_sequence", {"selection": selection.to_selection()}, instance)
+    )
+
+
+@mcp.tool()
+def measure(
+    ctx: Context,
+    selection1: Selector,
+    selection2: Selector,
+    instance: int | None = None,
+) -> Measurement:
+    """Distance in angstroms between two single atoms, with no scene change.
+
+    Each selection must match exactly one atom; anything else is an error
+    rather than a silent average. Unlike the `distance` command this leaves no
+    labelled distance object behind, so reading a number does not alter the
+    next render.
+    """
+    return Measurement.model_validate(
+        _introspect(
+            "measure",
+            {
+                "selection1": selection1.to_selection(),
+                "selection2": selection2.to_selection(),
+            },
+            instance,
+        )
+    )
+
+
+@mcp.tool()
+def clear_selections(ctx: Context, instance: int | None = None) -> ClearedSelections:
+    """Delete every named selection, and report which were removed.
+
+    Named selections render as magenta dots in a ray trace, so they have to go
+    before any figure. Deleting them individually means remembering every name
+    you created.
+    """
+    return ClearedSelections.model_validate(
+        _introspect("clear_selections", {}, instance)
+    )
 
 
 ##############################################################################

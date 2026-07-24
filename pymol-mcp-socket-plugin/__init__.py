@@ -1176,6 +1176,122 @@ def build_command_dispatcher(cmd):
             "gaps": _gaps_from(numbers),
         }
 
+    AA3TO1 = {
+        "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+        "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+        "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+        "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    }
+
+    def _ss_of(selection):
+        """(chain, resi) -> H | S | L for every residue.
+
+        PyMOL stores loop as an empty ss, not "L", which is why `ss L` in a
+        selection silently matches nothing. Normalising here means callers
+        never meet that.
+        """
+        raw = {}
+        cmd.iterate(
+            selection,
+            "raw[(chain, int(resv))] = ss",
+            space={"raw": raw, "int": int},
+        )
+        return {k: (v if v in ("H", "S") else "L") for k, v in raw.items()}
+
+    def _get_secondary_structure(args):
+        sel = args.get("selection") or "all"
+        table = _ss_of("(%s) and name CA" % sel)
+        ordered = sorted(table.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+        residues = [
+            {"chain": chain, "resi": resi, "ss": ss}
+            for (chain, resi), ss in ordered
+        ]
+        # Runs are what people actually read: "22 H, 3 L, 15 H" says
+        # helix-turn-helix, where 37 H and 3 L does not.
+        runs = []
+        for entry in residues:
+            if runs and runs[-1]["ss"] == entry["ss"] and \
+                    runs[-1]["chain"] == entry["chain"] and \
+                    runs[-1]["end"] + 1 == entry["resi"]:
+                runs[-1]["end"] = entry["resi"]
+                runs[-1]["length"] += 1
+            else:
+                runs.append({
+                    "chain": entry["chain"], "ss": entry["ss"],
+                    "start": entry["resi"], "end": entry["resi"], "length": 1,
+                })
+        counts = {"H": 0, "S": 0, "L": 0}
+        for entry in residues:
+            counts[entry["ss"]] += 1
+        return {
+            "selection": sel,
+            "residues": residues,
+            "runs": runs,
+            "helix": counts["H"],
+            "sheet": counts["S"],
+            "loop": counts["L"],
+            "pattern": "".join(
+                "%d%s" % (r["length"], r["ss"]) for r in runs
+            ),
+        }
+
+    def _get_sequence(args):
+        sel = args.get("selection") or "all"
+        table = {}
+        cmd.iterate(
+            "(%s) and name CA+C1'" % sel,
+            "table[(chain, int(resv))] = resn",
+            space={"table": table, "int": int},
+        )
+        ordered = sorted(table.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+        chains = {}
+        for (chain, resi), resn in ordered:
+            entry = chains.setdefault(
+                chain, {"chain": chain, "first": resi, "last": resi, "seq": ""}
+            )
+            # Nucleotides are already one or two characters; strip the deoxy D.
+            letter = AA3TO1.get(resn, resn[-1] if len(resn) <= 2 else "X")
+            entry["seq"] += letter
+            entry["last"] = resi
+        return {"selection": sel, "chains": list(chains.values())}
+
+    def _measure(args):
+        """Distance between two selections, with no scene side effect.
+
+        cmd.distance would answer the same question but leaves a labelled
+        distance object behind that then appears in every render. Reading a
+        number should not change the picture.
+        """
+        a = args.get("selection1")
+        b = args.get("selection2")
+        if not a or not b:
+            raise ValueError("measure requires 'selection1' and 'selection2'")
+        for name, sel in (("selection1", a), ("selection2", b)):
+            n = cmd.count_atoms(sel)
+            if n != 1:
+                raise ValueError(
+                    "%s must match exactly one atom, matched %d: %s"
+                    % (name, n, sel)
+                )
+        return {
+            "selection1": a,
+            "selection2": b,
+            "distance": round(cmd.get_distance(a, b), 4),
+        }
+
+    def _clear_selections(args):
+        """Delete every named selection.
+
+        Named selections draw as magenta dots in a ray trace, so they have to
+        go before rendering. Doing it one delete at a time means knowing every
+        name you created.
+        """
+        names = list(cmd.get_names("selections"))
+        for name in names:
+            cmd.delete(name)
+        cmd.deselect()
+        return {"deleted": names, "count": len(names)}
+
     def _enable(args):
         return cmd.enable(args.get("name", "all"))
 
@@ -1185,6 +1301,10 @@ def build_command_dispatcher(cmd):
     # Build the dispatcher — only these commands are allowed
     dispatcher = {
         "get_chains": _get_chains,
+        "get_secondary_structure": _get_secondary_structure,
+        "get_sequence": _get_sequence,
+        "measure": _measure,
+        "clear_selections": _clear_selections,
         "count": _count,
         "list_residues": _list_residues,
         "contacts": _contacts,

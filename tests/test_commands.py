@@ -3,6 +3,7 @@
 import re
 
 import pytest
+from conftest import load_plugin
 
 from pymol_mcp.models import (
     CommandDef,
@@ -879,3 +880,97 @@ class TestCompositeCommands:
 # ============================================================================
 # 15. SERVER MODULE INTEGRITY
 # ============================================================================
+
+
+##############################################################################
+# introspection handlers added with the typed facade
+##############################################################################
+
+
+class TestIntrospectionHandlers:
+    """The handlers are plain functions over cmd.*, so a stub cmd exercises them.
+
+    These do not need real PyMOL, which matters: the plugin only reloads when
+    PyMOL restarts, so a bug here is otherwise slow to find.
+    """
+
+    def _dispatcher(self, cmd):
+        module = load_plugin("plugin_introspection")
+        return module.build_command_dispatcher(cmd)
+
+    def test_secondary_structure_normalises_loop(self):
+        """PyMOL stores loop as an empty ss, which is why `ss L` matches nothing.
+
+        The handler must return "L" so a caller never meets that.
+        """
+        class FakeCmd:
+            def iterate(self, selection, expression, space=None):
+                # helix, helix, empty (loop), sheet
+                for resv, ss in ((1, "H"), (2, "H"), (3, ""), (4, "S")):
+                    eval(compile(expression, "<t>", "exec"),
+                         {**space, "chain": "A", "resv": resv, "ss": ss})
+
+        out = self._dispatcher(FakeCmd())["get_secondary_structure"]({"selection": "x"})
+        assert [r["ss"] for r in out["residues"]] == ["H", "H", "L", "S"]
+        assert out["helix"] == 2 and out["loop"] == 1 and out["sheet"] == 1
+
+    def test_secondary_structure_pattern_is_run_length(self):
+        class FakeCmd:
+            def iterate(self, selection, expression, space=None):
+                seq = ["H"] * 22 + [""] * 3 + ["H"] * 15
+                for i, ss in enumerate(seq, start=248):
+                    eval(compile(expression, "<t>", "exec"),
+                         {**space, "chain": "A", "resv": i, "ss": ss})
+
+        out = self._dispatcher(FakeCmd())["get_secondary_structure"]({"selection": "x"})
+        # 37 helical residues could be one helix; the pattern is what says
+        # helix-turn-helix.
+        assert out["pattern"] == "22H3L15H"
+        assert [r["length"] for r in out["runs"]] == [22, 3, 15]
+
+    def test_measure_rejects_a_selection_matching_several_atoms(self):
+        class FakeCmd:
+            def count_atoms(self, selection):
+                return 1 if "one" in selection else 42
+            def get_distance(self, a, b):
+                return 3.13
+
+        dispatch = self._dispatcher(FakeCmd())["measure"]
+        with pytest.raises(ValueError, match="exactly one atom"):
+            dispatch({"selection1": "many", "selection2": "one"})
+
+    def test_measure_returns_a_distance_without_creating_an_object(self):
+        created = []
+
+        class FakeCmd:
+            def count_atoms(self, selection):
+                return 1
+            def get_distance(self, a, b):
+                return 3.130526
+            def distance(self, *a, **k):      # must not be called
+                created.append(a)
+
+        out = self._dispatcher(FakeCmd())["measure"](
+            {"selection1": "a", "selection2": "b"}
+        )
+        assert out["distance"] == 3.1305
+        assert created == [], "measure must not create a distance object"
+
+    def test_clear_selections_reports_what_it_removed(self):
+        class FakeCmd:
+            def __init__(self):
+                self.deleted = []
+                self.deselected = False
+            def get_names(self, kind):
+                assert kind == "selections"
+                return ["sele", "ebs1", "ibs2"]
+            def delete(self, name):
+                self.deleted.append(name)
+            def deselect(self):
+                self.deselected = True
+
+        fake = FakeCmd()
+        out = self._dispatcher(fake)["clear_selections"]({})
+        assert out["count"] == 3
+        assert fake.deleted == ["sele", "ebs1", "ibs2"]
+        assert fake.deselected is True

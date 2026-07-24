@@ -1,6 +1,6 @@
 ---
 name: pymol-mcp
-description: Drive PyMOL through the pymol MCP server. Covers the typed tools (get_chains, count, list_residues, contacts, get_gaps, select, apply, render_png, render_movie) and when to prefer them over selection strings, starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax and its silent traps, splitting DNA from RNA, labelling, transparency, rendering stills and animations, and verifying a change by looking at it. Use whenever calling mcp__pymol__* tools, or when a PyMOL tool call fails to connect.
+description: Drive PyMOL through the pymol MCP server. Covers the typed tools (get_chains, count, list_residues, contacts, get_gaps, get_secondary_structure, get_sequence, measure, select, apply, clear_selections, render_png, render_movie) and when to prefer them over selection strings, starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax and its silent traps, splitting DNA from RNA, labelling, transparency, rendering stills and animations, and verifying a change by looking at it. Use whenever calling mcp__pymol__* tools, or when a PyMOL tool call fails to connect.
 ---
 
 # Driving PyMOL through the MCP server
@@ -183,8 +183,12 @@ mistake documented further down.
 | `list_residues` | which residues, as chain/resi/resn |
 | `contacts` | which residues of A are near B |
 | `get_gaps` | what is unmodelled in a chain |
+| `get_secondary_structure` | helix/sheet/loop per residue, and as runs |
+| `get_sequence` | one-letter sequence per chain, with numbering |
+| `measure` | distance between two atoms, no scene change |
 | `select` | name a selection, and report what it caught |
 | `apply` | colour/show/hide/zoom a typed selection |
+| `clear_selections` | delete every named selection before rendering |
 
 A `Selector` takes `object`, `chain`, `residues`, `residue_range`, `molecule`,
 `atom_names`, or `raw` as an escape hatch for anything the model cannot say.
@@ -213,6 +217,16 @@ one named setting. The server still cannot enumerate arbitrary atom
 properties, but the typed tools cover the common questions: `count`,
 `list_residues`, `get_chains`, `get_gaps` and `contacts` all return structured
 data. Inspect a render for visual state.
+
+## Measuring
+
+`mcp__pymol__measure` takes two selections that must each match exactly one
+atom, and returns the distance. Anything else is an error rather than a silent
+average over whatever matched.
+
+Prefer it to the `distance` command, which answers the same question but leaves
+a labelled distance object in the scene that then appears in every subsequent
+render. Reading a number should not change the picture.
 
 ## Always verify by rendering
 
@@ -488,21 +502,21 @@ one atom of backbone context so side chains remain connected:
 show sticks, (chain A and resi 278+282+285) and (sidechain or name CA)
 ```
 
-### `ss L` matches nothing
+### Reading secondary structure
 
-Selecting by secondary structure works for helix and sheet but **not** for
-loop. A loop is the *absence* of an assignment, not the value `L`, so `ss L`
-silently returns zero — including across ranges that are entirely loop:
+`mcp__pymol__get_secondary_structure` returns it per residue plus a run-length
+`pattern` like `22H3L15H` — which is what identifies a helix-turn-helix, where
+"37 helical residues" does not.
+
+By hand there are two traps. `color_ss` only *colours* by structure, so reading
+it back means looking at a render. And **`ss L` silently matches nothing**: a
+loop is the absence of an assignment, not the value `L`.
 
 ```
 resi 248-287 and ss H                     -> 37   correct
 resi 248-287 and ss L                     ->  0   wrong, silently
 resi 248-287 and not (ss H or ss S)       ->  3   correct
 ```
-
-There is also no way to *read* secondary structure back. `color_ss` colours by
-it, and `ss H`/`ss S` give counts, but recovering the actual pattern along a
-chain means one query per segment.
 
 ### Negative residue numbers must be escaped
 
