@@ -441,45 +441,22 @@ polymer.nucleic                          # RNA *and* DNA together
 solvent or inorganic                     # waters, ions
 ```
 
-Splitting RNA from DNA: the server has no selector for this, so go by residue
-name. Standard PDB deoxy residues are DNA; everything else nucleic is RNA:
-
-```
-select dna, polymer.nucleic and resn DA+DC+DG+DT+DI
-select rna, polymer.nucleic and not resn DA+DC+DG+DT+DI
-```
-
-Both calls return atom counts, so use them as a sanity check. Modified or
-non-standard residues fall on the RNA side, so confirm the counts look sane.
+Splitting RNA from DNA has no dedicated selector. Use
+`Selector(molecule="rna" | "dna" | "protein")`, which applies the residue-name
+idiom for you. By hand it is `polymer.nucleic and resn DA+DC+DG+DT+DI` for DNA,
+and `not resn ...` for RNA; modified residues fall on the RNA side.
 
 ### `byres` swallows the rest of the expression
 
-`byres` binds looser than `and`, so it expands whatever the *whole* remaining
-expression evaluates to. `byres A and name C1'` is not "expand A to residues,
-then keep the C1′ atoms" — it is `byres (A and name C1')`, "expand to whole
-residues those atoms that are both in A and named C1′".
+Use `mcp__pymol__contacts`, which always returns whole residues and narrows via
+`atom_names`, so operator placement never arises.
 
-`mcp__pymol__contacts` avoids this entirely: it always returns whole residues,
-and you narrow the question with `atom_names` in the selector rather than by
-operator placement. What follows matters when writing selections by hand.
-
-The two readings give genuinely different answers, and both look reasonable:
-
-```
-select t, byres (chain C within 4 of chain E) and name C1'      -> 89 atoms, 4 residues
-select t, (byres (chain C within 4 of chain E)) and name C1'    -> 30 atoms, 30 residues
-```
-
-The first asks "which residues have their C1′ specifically within 4 Å" — four
-of them, then shows every atom of those four. The second asks "which residues
-have *any* atom within 4 Å" — thirty — then takes one atom each. If you are
-counting residues at an interface, you almost always want the second, so
-parenthesise the `byres` group explicitly.
-
-This bites hardest when the count is the answer. Both forms return a plausible
-number, neither errors, and the difference between 4 and 30 can invert a
-structural conclusion. The same applies to `bychain`, `bymolecule` and
-`byobject`.
+By hand, `byres` binds looser than `and`: `byres A and name C1'` means
+`byres (A and name C1')` — "residues whose C1′ satisfies A" — not "residues
+satisfying A, then their C1′ atoms". On one interface that is 4 residues rather
+than 30. Both forms return a plausible number and neither errors, so
+parenthesise the group explicitly: `(byres A) and name C1'`. Same for
+`bychain`, `bymolecule`, `byobject`.
 
 ### Showing alternate DNA conformers and their backbones
 
@@ -513,45 +490,21 @@ show sticks, (chain A and resi 278+282+285) and (sidechain or name CA)
 
 ### Negative residue numbers must be escaped
 
-Anything going through a `Selector` is safe: `ResidueRange(start=-12, end=-8)`
-renders the escaping correctly, including both endpoints. The rest of this
-section matters when writing `resi` by hand.
+Anything built from a `Selector`/`ResidueRange` is already correct. By hand:
 
-`resi` treats `-` as a range operator, so a negative residue number is silently
-read as an open-ended range instead: `resi -12` means "everything up to 12", not
-"residue −12". It does not error — it just selects far too much. Escape the
-minus sign with a backslash:
+`resi` reads `-` as a range operator, so `resi -12` silently means "everything
+up to 12" — 719 atoms rather than 20. It does not error. Escape every negative
+endpoint, including the second one in a range:
 
 ```
-select t, chain E and resi \-12      -> 20     one nucleotide, correct
-select t, chain E and resi -12       -> 719    parsed as "resi <= 12"
+resi \-12        one residue          resi -12       719 atoms, wrong
+resi \-12-\-8    5 nucleotides        resi \-12--8   ~20, wrong
+resi \-5-1       6 nucleotides        (high end positive, one escape)
 ```
 
-Nucleic acid chains hit this constantly, since numbering conventionally runs
-negative upstream of a reference point. The escaped form composes normally in a
-`+` list:
-
-```
-select cww, chain E and resi \-12+\-11+\-10+1+2
-```
-
-Because the failure is silent, always check the returned atom count against
-what you expect (roughly 20 atoms per nucleotide, 8 per amino acid) before
-acting on a selection with negative numbering in it.
-
-A range needs a backslash on **every endpoint that is negative**, not just the
-first. Escaping only the low end leaves the second minus reading as the range
-operator again, and the result is silently far too wide:
-
-```
-select t, chain E and resi \-12--8    -> 409    wrong, about 20 nucleotides
-select t, chain E and resi \-12-\-8   -> 104    correct, 5 nucleotides
-select t, chain E and resi \-5-1      -> 119    correct, high end is positive
-```
-
-The middle form is the one to write when both ends are negative. It reads
-badly — `\-12-\-8` — but the alternative is a selection that looks plausible
-and is not.
+Escaped numbers compose in `+` lists: `resi \-12+\-11+1+2`. Because the failure
+is silent, check the returned count (~20 atoms per nucleotide, ~8 per residue)
+before acting on it.
 
 ## Enumerating and colouring chains
 

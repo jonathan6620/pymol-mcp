@@ -6,6 +6,21 @@ under contact with the code -- see "What changed in implementation" at the end.
 
 ## The problem
 
+> **Correction, after implementing.** The premise below -- that most of what the
+> skill documents is selection workarounds, so typing the interface would delete
+> the prose -- was wrong, and measurement settled it. Only 21% of the skill was
+> ever selection-related; the other 79% is launching PyMOL, verifying renders,
+> session recovery and `.pse` handling, none of which a typed API touches. The
+> skill went 627 lines to 633 across the whole project. Compressing the
+> selection sections afterwards took them from 144 lines to 97, which is a real
+> but modest cut.
+>
+> The work was still worth doing, for a different reason than the one argued
+> here: it added eight capabilities the server did not have (get_chains, count,
+> list_residues, contacts, get_gaps, render_movie, enable, disable) and fixed two
+> plugin bugs. It is capability work, not prose-reduction work. Judge the design
+> below on that.
+
 The server exposes PyMOL's selection language as strings. That language has
 sharp edges, and because a malformed selection is usually *valid* — just not the
 one intended — every edge fails silently and has to be documented instead of
