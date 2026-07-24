@@ -1,0 +1,13 @@
+# Conda environment for PyMOL itself -- NOT this repo's Python deps, which are
+# in pyproject.toml and installed with `uv sync`. PyMOL runs in its own
+# interpreter and talks to the MCP server over a socket.
+#
+#     conda env create -f environment.yml
+#     conda activate pymol-env
+name: pymol-env
+
+channels:
+  - conda-forge
+
+dependencies:
+  - pymol-open-source >=3.0

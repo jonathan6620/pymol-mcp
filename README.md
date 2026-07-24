@@ -16,18 +16,21 @@ and analysis through natural language.
 
 ## Prerequisites
 
-- PyMOL installed on your system
+- PyMOL — see [Step 0](#step-0-install-pymol)
 - Claude Desktop, Claude Code, or OpenAI Codex
 - Git
 - Make, if you want to use the [Quick Start](#quick-start)
 
 ## Quick Start
 
-For Claude Code, with [uv](#step-1-install-the-uv-package-manager), *PyMOL* and *Make* installed:
+For Claude Code, with [uv](#step-1-install-the-uv-package-manager), *conda* and
+*Make* installed:
 
 ```bash
 git clone https://github.com/jonathan6620/pymol-mcp
 cd pymol-mcp
+conda env create -f environment.yml     # installs PyMOL; skip if you have it
+conda activate pymol-env
 uv sync
 claude mcp add pymol -s user -- uv --directory $(pwd) run pymol-mcp
 make install
@@ -49,6 +52,23 @@ For Claude Desktop, use [Step 3, Option A](#option-a-claude-desktop) in place of
 the `claude mcp add` line, then run `make install`.
 
 ## Full Installation Guide
+
+### Step 0: Install PyMOL
+
+```bash
+conda env create -f environment.yml
+conda activate pymol-env
+```
+
+That installs `pymol-open-source` from conda-forge — no licence key, no expiry.
+Schrödinger's "incentive" build works too, but needs a licence file; nothing in
+this server's command table depends on its extras.
+
+Any other PyMOL install works as well; `make` will find it, or you can pass
+`PYMOL=/full/path/to/pymol`.
+
+PyMOL keeps its own Python, separate from this repo's `.venv` — the two talk
+over a socket, so they never need the same packages.
 
 ### Step 1: Install the uv Package Manager
 
@@ -351,6 +371,8 @@ pymol-mcp-socket-plugin/   PyMOL plugin (the directory name is the module
 scripts/               install_plugin, install_pymolrc, install_skill
 skills/pymol-mcp/      Claude Code skill
 tests/                 pytest suite; conftest.py stubs the MCP framework
+environment.yml        conda env for PyMOL; this repo's own deps are in
+                       pyproject.toml, pinned by uv.lock
 ```
 
 Run the test suite and linters with uv:
