@@ -258,3 +258,111 @@ def test_render_movie_cleans_up_frame_files(monkeypatch, tmp_path):
     _movie(monkeypatch, tmp_path, frames=3)
     leftovers = [p for p in tmp_path.rglob("*.png")]
     assert leftovers == [], f"temporary frames left behind: {leftovers}"
+
+
+##############################################################################
+# typed effect commands
+##############################################################################
+
+
+class _RecordingConnection:
+    def __init__(self, result=None):
+        self.sent = []
+        self._result = result or {"executed": True, "output": "ok"}
+
+    def send_command(self, command, args, source=None, timeout=None):
+        self.sent.append((command, args))
+        if command == "count":
+            return {
+                "status": "success",
+                "result": {
+                    "executed": True,
+                    "data": {
+                        "selection": args["selection"],
+                        "atoms": 104,
+                        "residues": 5,
+                        "chains": 1,
+                    },
+                },
+            }
+        return {"status": "success", "result": self._result}
+
+
+def _conn(monkeypatch, result=None):
+    conn = _RecordingConnection(result)
+    monkeypatch.setattr(server, "get_pymol_connection", lambda instance=None: conn)
+    return conn
+
+
+def test_apply_renders_the_selector_and_escapes_negatives(monkeypatch):
+    from pymol_mcp.api import ResidueRange, Selector
+
+    conn = _conn(monkeypatch)
+    server._apply(
+        None,
+        "color",
+        Selector(chain="E", residue_range=ResidueRange(start=-12, end=-8)),
+        value="red",
+    )
+    command, args = conn.sent[0]
+    assert command == "color"
+    assert args["color"] == "red"
+    # The caller wrote integers; the escaping is the facade's job.
+    assert args["selection"] == r"(chain E) and (resi \-12-\-8)"
+
+
+def test_apply_uses_the_right_argument_name_per_command(monkeypatch):
+    from pymol_mcp.api import Selector
+
+    for command, key, value in [
+        ("show", "representation", "cartoon"),
+        ("cartoon", "type", "tube"),
+        ("as", "representation", "sticks"),
+    ]:
+        conn = _conn(monkeypatch)
+        server._apply(None, command, Selector(chain="A"), value=value)
+        assert conn.sent[0][1][key] == value
+
+
+def test_apply_selection_only_commands_take_no_value(monkeypatch):
+    from pymol_mcp.api import Selector
+
+    conn = _conn(monkeypatch)
+    server._apply(None, "zoom", Selector(object="bac"))
+    assert conn.sent[0] == ("zoom", {"selection": "bac"})
+
+
+def test_apply_object_commands_use_name_not_selection(monkeypatch):
+    from pymol_mcp.api import Selector
+
+    conn = _conn(monkeypatch)
+    server._apply(None, "disable", Selector(object="bac"))
+    assert conn.sent[0] == ("disable", {"name": "bac"})
+
+
+def test_apply_requires_a_value_where_one_is_needed(monkeypatch):
+    from pymol_mcp.api import Selector
+
+    _conn(monkeypatch)
+    with pytest.raises(ValueError, match="needs a value"):
+        server._apply(None, "color", Selector(chain="A"))
+
+
+def test_apply_rejects_commands_that_are_not_effects(monkeypatch):
+    from pymol_mcp.api import Selector
+
+    _conn(monkeypatch)
+    with pytest.raises(ValueError, match="not an effect command"):
+        server._apply(None, "ray", Selector(chain="A"))
+
+
+def test_select_returns_typed_counts(monkeypatch):
+    from pymol_mcp.api import ResidueRange, Selector
+
+    conn = _conn(monkeypatch)
+    counts = server._select(
+        None, "ibs2", Selector(chain="E", residue_range=ResidueRange(start=-12, end=-8))
+    )
+    assert [c for c, _ in conn.sent] == ["select", "count"]
+    assert counts.atoms == 104
+    assert counts.residues == 5

@@ -1737,6 +1737,115 @@ def get_gaps(
 
 
 ##############################################################################
+# TYPED EFFECT COMMANDS
+#
+# Two tools rather than one per command. The value of the typed path is passing
+# a Selector instead of building a selection string, and that is the same
+# argument in every case -- five near-duplicate tools would add clutter without
+# adding expressiveness. parse_and_execute stays for anyone who already knows
+# the PyMOL syntax and would rather type it.
+##############################################################################
+
+# command -> the argument its first (non-selection) parameter is called.
+_EFFECT_VALUE_ARG = {
+    "color": "color",
+    "show": "representation",
+    "hide": "representation",
+    "as": "representation",
+    "cartoon": "type",
+    "spectrum": "expression",
+}
+# Commands that act on a selection alone.
+_EFFECT_NO_VALUE = {"zoom", "orient", "center", "delete", "enable", "disable"}
+
+
+def _apply(
+    ctx: Context,
+    command: str,
+    selection: Selector,
+    value: str | None = None,
+    instance: int | None = None,
+) -> str:
+    """Implementation. The decorated tool below is a MagicMock under the test
+    stub, so the logic lives here where tests can reach it -- the same split as
+    _render_png/render_png."""
+    if command in _EFFECT_VALUE_ARG:
+        if value is None:
+            raise ValueError(f"'{command}' needs a value, e.g. a colour name")
+        args = {
+            _EFFECT_VALUE_ARG[command]: value,
+            "selection": selection.to_selection(),
+        }
+    elif command in _EFFECT_NO_VALUE:
+        if command in ("enable", "disable", "delete"):
+            args = {"name": selection.to_selection()}
+        else:
+            args = {"selection": selection.to_selection()}
+    else:
+        known = sorted(set(_EFFECT_VALUE_ARG) | _EFFECT_NO_VALUE)
+        raise ValueError(f"'{command}' is not an effect command; try one of {known}")
+
+    response = get_pymol_connection(instance).send_command(
+        command, args, source=f"{command} {args}"
+    )
+    output = _direct_output(response)
+    return output or f"{command} applied to {args.get('selection', args.get('name'))}"
+
+
+def _select(
+    ctx: Context,
+    name: str,
+    selection: Selector,
+    instance: int | None = None,
+) -> Counts:
+    """Implementation; see the note on _apply."""
+    rendered = selection.to_selection()
+    get_pymol_connection(instance).send_command(
+        "select", {"name": name, "selection": rendered},
+        source=f"select {name}, {rendered}",
+    )
+    return Counts.model_validate(
+        _introspect("count", {"selection": rendered}, instance)
+    )
+
+
+@mcp.tool()
+def apply(
+    ctx: Context,
+    command: str,
+    selection: Selector,
+    value: str | None = None,
+    instance: int | None = None,
+) -> str:
+    """Apply a display command to a typed selection.
+
+    `command` is one of color, show, hide, as, cartoon, spectrum (each needing
+    `value`), or zoom, orient, center, delete, enable, disable (which do not).
+
+    Example: apply("color", Selector(chain="E", residue_range={"start": -12,
+    "end": -8}), value="red") -- no backslash escaping to get wrong.
+    """
+    return _apply(ctx, command, selection, value, instance)
+
+
+@mcp.tool()
+def select(
+    ctx: Context,
+    name: str,
+    selection: Selector,
+    instance: int | None = None,
+) -> Counts:
+    """Create a named selection and report what it caught.
+
+    Returns typed counts rather than an atom total buried in reply text, so a
+    selection that landed on the wrong thing is visible immediately -- which is
+    the usual failure mode, since a wrong selection is normally still a valid
+    one.
+    """
+    return _select(ctx, name, selection, instance)
+
+
+##############################################################################
 # MOVIE RENDERING
 ##############################################################################
 
