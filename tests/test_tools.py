@@ -84,10 +84,13 @@ def test_render_png_returns_verified_image(monkeypatch, tmp_path):
         server, "get_pymol_connection", lambda instance=None: FakeConnection()
     )
     output_path = tmp_path / "render.png"
-    result = server._render_png(
+    meta = server._render_png(
         None, str(output_path), width=640, height=480, dpi=300
     )
-    assert "640x480" in result[0]
+    assert (meta.width, meta.height) == (640, 480)
+    assert meta.dpi == 300
+    assert meta.ray is True
+    assert meta.path == str(output_path)
     assert output_path.exists()
 
 

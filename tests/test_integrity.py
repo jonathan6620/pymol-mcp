@@ -173,27 +173,25 @@ class TestServerModuleIntegrity:
             "The mcp package API may have changed again."
         )
 
-    def test_render_png_does_not_declare_structured_output(self):
-        """render_png must not build a pydantic output model.
+    def test_render_png_declares_render_meta_schema(self):
+        """render_png must publish a typed schema for its metadata.
 
-        It returns [str, Image]. When FastMCP derives an output model from the
-        return annotation it serialises the result through pydantic, which
-        cannot encode an Image, and every call fails with
-        PydanticSerializationError. Annotating the return as list[ContentBlock]
-        does not help either -- the str and Image are then rejected by output
-        validation instead. The fix is structured_output=False on the decorator.
+        Its dimensions, DPI and ray flag used to reach the caller only inside an
+        English sentence. They are now structuredContent validated against
+        RenderMeta, so the schema has to be present and has to carry those
+        fields.
 
-        Subprocess, because conftest replaces the whole mcp package with a
-        MagicMock in-process, so the decorator's real behaviour is invisible to
-        every other test in the suite.
+        Subprocess, because conftest stubs FastMCP in-process, so decorator and
+        schema behaviour is invisible to every other test in the suite.
         """
         import subprocess
         result = subprocess.run(
             [
                 sys.executable, "-c",
-                "from pymol_mcp.server import mcp; "
-                "tool = mcp._tool_manager.get_tool('render_png'); "
-                "print(f'output_schema={tool.fn_metadata.output_schema}')"
+                "import json; from pymol_mcp.server import mcp; "
+                "t = mcp._tool_manager.get_tool('render_png'); "
+                "s = t.fn_metadata.output_schema; "
+                "print('schema=' + json.dumps(s))"
             ],
             capture_output=True, text=True,
             cwd=str(REPO_ROOT),
@@ -202,14 +200,22 @@ class TestServerModuleIntegrity:
             f"Failed to inspect render_png:\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
-        assert "output_schema=None" in result.stdout, (
-            "render_png declares a structured output schema. Returning an Image "
-            "through it raises PydanticSerializationError at call time. Keep "
-            "structured_output=False on the @mcp.tool decorator."
+        assert "schema=null" not in result.stdout, (
+            "render_png publishes no output schema. Its metadata is then "
+            "text-only and a caller has to parse prose to get the dimensions."
         )
+        for field in ("path", "width", "height", "dpi", "ray"):
+            assert field in result.stdout, f"{field} missing from output schema"
 
-    def test_render_png_result_converts_to_image_content(self, tmp_path):
-        """A [str, Image] return must reach the client as text + image blocks."""
+    def test_render_png_returns_image_block_and_structured_metadata(self):
+        """Both MCP channels must be used: bytes as content, facts as structured.
+
+        Regression guard for two failure modes at once. Putting the Image inside
+        the structured payload raises PydanticSerializationError, which broke
+        every call. Dropping the ImageContent block loses the picture. The shape
+        that satisfies both is CallToolResult carrying content plus
+        structuredContent.
+        """
         import struct
         import subprocess
         import zlib
@@ -217,41 +223,94 @@ class TestServerModuleIntegrity:
         def chunk(kind: bytes, data: bytes) -> bytes:
             checksum = zlib.crc32(kind)
             checksum = zlib.crc32(data, checksum) & 0xFFFFFFFF
-            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+            return (
+                struct.pack(">I", len(data))
+                + kind
+                + data
+                + struct.pack(">I", checksum)
+            )
 
-        png_path = tmp_path / "render.png"
+        png_path = REPO_ROOT / "tests" / "_tmp_integrity_render.png"
         png_path.write_bytes(
-            b"\x89PNG\r\n\x1a\n"
+            b"\x89PNG\r\n\x1a\x08"[:8].replace(b"\x08", b"\n")
             + chunk(b"IHDR", struct.pack(">IIBBBBB", 640, 480, 8, 6, 0, 0, 0))
             + chunk(b"IDAT", b"")
             + chunk(b"IEND", b"")
         )
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable, "-c",
+                    "import sys, json; "
+                    "from pathlib import Path; "
+                    "from pymol_mcp.server import mcp, _image_result; "
+                    "from pymol_mcp.api import RenderMeta; "
+                    "p = sys.argv[1]; "
+                    "meta = RenderMeta(path=p, width=640, height=480, "
+                    "dpi=300, ray=True); "
+                    "res = _image_result(meta, 'Rendered 640x480', "
+                    "Path(p), 'image/png'); "
+                    "t = mcp._tool_manager.get_tool('render_png'); "
+                    "out = t.fn_metadata.convert_result(res); "
+                    "print('kinds=' + ','.join(c.type for c in out.content)); "
+                    "print('mime=' + out.content[1].mimeType); "
+                    "print('structured=' + json.dumps(out.structuredContent))",
+                    str(png_path),
+                ],
+                capture_output=True, text=True,
+                cwd=str(REPO_ROOT),
+            )
+            assert result.returncode == 0, (
+                f"render_png result conversion failed:\n"
+                f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+            assert "kinds=text,image" in result.stdout, result.stdout
+            assert "mime=image/png" in result.stdout
+            assert '"width": 640' in result.stdout
+            assert '"ray": true' in result.stdout
+        finally:
+            png_path.unlink(missing_ok=True)
 
+    def test_image_inside_structured_payload_still_fails(self):
+        """Documents why the CallToolResult shape is necessary, not stylistic.
+
+        An Image reached through an ordinary structured return cannot be
+        serialised by pydantic, and the call fails at runtime rather than at
+        import. Keeping this pinned means the reason for the indirection in
+        _image_result stays discoverable, and we find out if the SDK ever gains
+        support for it.
+        """
+        import subprocess
         result = subprocess.run(
             [
                 sys.executable, "-c",
-                "import sys; "
-                "from pymol_mcp.server import mcp; "
+                "from typing import Any; "
+                "from mcp.server.fastmcp.utilities.func_metadata "
+                "import func_metadata; "
                 "from mcp.server.fastmcp.utilities.types import Image; "
-                "tool = mcp._tool_manager.get_tool('render_png'); "
-                "blocks = tool.fn_metadata.convert_result("
-                "    ['Rendered render.png (640x480, 300 DPI, ray=on)', "
-                "     Image(path=sys.argv[1])]); "
-                "print('kinds=' + ','.join(type(b).__name__ for b in blocks)); "
-                "print('mime=' + blocks[1].mimeType); "
-                "print('has_data=' + str(bool(blocks[1].data)))",
-                str(png_path),
+                "f = lambda: None; "
+                "f.__annotations__ = {'return': dict[str, Any]}; "
+                "md = func_metadata(f); "
+                "print('schema_built=' + str(md.output_schema is not None)); "
+                "r = None\n"
+                "try:\n"
+                "    md.convert_result({'img': Image(data=b'x', format='png')})\n"
+                "    print('SERIALISED')\n"
+                "except Exception as e:\n"
+                "    print('RAISED ' + type(e).__name__)\n"
             ],
             capture_output=True, text=True,
             cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, (
-            f"render_png result conversion failed:\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            f"probe failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
-        assert "kinds=TextContent,ImageContent" in result.stdout
-        assert "mime=image/png" in result.stdout
-        assert "has_data=True" in result.stdout
+        assert "schema_built=True" in result.stdout, result.stdout
+        assert "RAISED" in result.stdout, (
+            "An Image inside a structured payload now serialises. If the SDK "
+            "gained support for this, the CallToolResult indirection in "
+            "_image_result may no longer be needed."
+        )
 
     def test_parse_and_execute_tool_registered(self):
         """The parse_and_execute function should be registered as an MCP tool."""

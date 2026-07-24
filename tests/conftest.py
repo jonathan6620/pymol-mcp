@@ -17,8 +17,19 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 # FastMCP's initialisation fails outside a real MCP runtime, so stub the
 # framework. TestServerModuleIntegrity checks the real import in a subprocess,
 # where this stub is not in effect.
+#
+# `mcp.types` is deliberately kept real. It is pure pydantic data -- content
+# blocks, request/result shapes -- with no runtime to fail, and stubbing it would
+# turn every CallToolResult and TextContent in a test into a MagicMock that
+# asserts nothing. It has to be imported before the stub goes in, because
+# replacing `mcp` makes it a non-package and `import mcp.types` then fails.
+import mcp.types as _real_mcp_types  # noqa: E402
+
 for _name in ("mcp", "mcp.server", "mcp.server.fastmcp"):
     sys.modules[_name] = MagicMock()
+
+sys.modules["mcp.types"] = _real_mcp_types
+sys.modules["mcp"].types = _real_mcp_types
 
 
 def free_ports(count=1):

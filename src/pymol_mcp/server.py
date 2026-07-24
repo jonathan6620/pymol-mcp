@@ -9,10 +9,13 @@ import tempfile
 import zlib
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Annotated, Any, AsyncIterator
 
 from mcp.server.fastmcp import Context, FastMCP, Image
+from mcp.types import CallToolResult, TextContent
+from pydantic import BaseModel
 
+from pymol_mcp.api import RenderMeta
 from pymol_mcp.models import (
     CommandDef,
     ErrorCategory,
@@ -1482,8 +1485,8 @@ def _render_png(
     dpi: float = 300.0,
     ray: bool = True,
     instance: int | None = None,
-) -> list[Any]:
-    """Render a typed PNG and return both verified metadata and the image."""
+) -> RenderMeta:
+    """Render a PNG, verify it, and return its metadata."""
     if not (1 <= width <= 10_000 and 1 <= height <= 10_000):
         raise ValueError("Width and height must each be between 1 and 10000")
     if width * height > 64_000_000:
@@ -1532,20 +1535,43 @@ def _render_png(
         temporary_path.replace(path)
     finally:
         temporary_path.unlink(missing_ok=True)
-    return [
-        f"Rendered {path} ({actual_width}x{actual_height}, {dpi:g} DPI, "
-        f"ray={'on' if ray else 'off'})",
-        Image(path=path),
-    ]
+    return RenderMeta(
+        path=str(path),
+        width=actual_width,
+        height=actual_height,
+        dpi=dpi,
+        ray=ray,
+    )
 
 
-# structured_output=False is required, not stylistic. FastMCP builds an output
-# model from the return annotation and serialises the result through pydantic,
-# which cannot encode an Image and fails the whole call. Annotating the return
-# as list[ContentBlock] does not help -- the str and Image are then rejected by
-# validation instead. Suppressing the output model routes the result through
-# _convert_to_content, which knows how to turn Image into ImageContent.
-@mcp.tool(structured_output=False)
+def _image_result(
+    meta: BaseModel, summary: str, path: Path, mime: str
+) -> CallToolResult:
+    """Package bytes plus facts for return from a tool.
+
+    The two MCP channels are separate and both get used: the bytes travel as an
+    ImageContent block, which is what a client renders, and the metadata travels
+    as structuredContent, validated against the model. Putting the base64 into
+    structuredContent as well would double a multi-megabyte payload for nothing.
+
+    The naive `-> list[Any]` returning [str, Image] does not work: FastMCP builds
+    an output model from the annotation and serialises through pydantic, which
+    cannot encode an Image, so the whole call fails. Annotating list[ContentBlock]
+    does not help either -- the str and Image are then rejected by output
+    validation instead.
+    """
+    image = Image(path=path)
+    image._mime_type = mime  # noqa: SLF001 - Image infers from suffix; .gif needs help
+    return CallToolResult(
+        content=[
+            TextContent(type="text", text=summary),
+            image.to_image_content(),
+        ],
+        structuredContent=meta.model_dump(mode="json"),
+    )
+
+
+@mcp.tool()
 def render_png(
     ctx: Context,
     filename: str,
@@ -1554,9 +1580,14 @@ def render_png(
     dpi: float = 300.0,
     ray: bool = True,
     instance: int | None = None,
-) -> list[Any]:
-    """Render a typed PNG and return both verified metadata and the image."""
-    return _render_png(ctx, filename, width, height, dpi, ray, instance)
+) -> Annotated[CallToolResult, RenderMeta]:
+    """Render a PNG and return both verified metadata and the image."""
+    meta = _render_png(ctx, filename, width, height, dpi, ray, instance)
+    summary = (
+        f"Rendered {meta.path} ({meta.width}x{meta.height}, {meta.dpi:g} DPI, "
+        f"ray={'on' if meta.ray else 'off'})"
+    )
+    return _image_result(meta, summary, Path(meta.path), "image/png")
 
 
 ##############################################################################
