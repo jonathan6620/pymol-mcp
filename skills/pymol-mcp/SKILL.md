@@ -488,6 +488,22 @@ one atom of backbone context so side chains remain connected:
 show sticks, (chain A and resi 278+282+285) and (sidechain or name CA)
 ```
 
+### `ss L` matches nothing
+
+Selecting by secondary structure works for helix and sheet but **not** for
+loop. A loop is the *absence* of an assignment, not the value `L`, so `ss L`
+silently returns zero — including across ranges that are entirely loop:
+
+```
+resi 248-287 and ss H                     -> 37   correct
+resi 248-287 and ss L                     ->  0   wrong, silently
+resi 248-287 and not (ss H or ss S)       ->  3   correct
+```
+
+There is also no way to *read* secondary structure back. `color_ss` colours by
+it, and `ss H`/`ss S` give counts, but recovering the actual pattern along a
+chain means one query per segment.
+
 ### Negative residue numbers must be escaped
 
 Anything built from a `Selector`/`ResidueRange` is already correct. By hand:
