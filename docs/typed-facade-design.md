@@ -62,8 +62,65 @@ def get_chains(obj: str) -> ChainsOut: ...
 ```
 
 This is the same machinery that broke `render_png` (commit `ae6a0ab`), which
-needs `structured_output=False` because `Image` is not serialisable. Every tool
-that returns *data* rather than an image wants it on.
+currently sets `structured_output=False` because `Image` is not serialisable.
+That workaround is a floor, not a ceiling — see below.
+
+## Images and other non-JSON content
+
+`render_png` today returns `[str, Image]` with `structured_output=False`, so its
+metadata — path, dimensions, DPI, whether it was ray-traced — reaches the caller
+only as English prose to be re-parsed:
+
+```
+Rendered /tmp/fig.png (1200x900, 300 DPI, ray=on)
+```
+
+Images do not have to be excluded from the typed path. The mistake in the
+original bug was trying to put an `Image` *inside* the structured payload, which
+pydantic cannot serialise. The two channels are separate, and the right split is
+to use both:
+
+- **bytes** travel as MCP `ContentBlock`s (`ImageContent`), which is what the
+  client renders;
+- **metadata** travels as `structuredContent`, validated against a model.
+
+The SDK supports exactly this. Annotate the return as `CallToolResult` with the
+validation model attached, and return both:
+
+```python
+class RenderMeta(BaseModel):
+    path: str
+    width: int
+    height: int
+    dpi: float
+    ray: bool
+
+@mcp.tool()
+def render_png(...) -> Annotated[CallToolResult, RenderMeta]:
+    return CallToolResult(
+        content=[TextContent(type="text", text=f"Rendered {path}"),
+                 ImageContent(type="image", data=b64, mimeType="image/png")],
+        structuredContent=RenderMeta(...).model_dump(mode="json"),
+    )
+```
+
+Verified against SDK 1.28.1:
+
+- an `outputSchema` is generated from `RenderMeta`, so the metadata is typed;
+- `convert_result` passes the `CallToolResult` through with both content blocks
+  intact;
+- `structuredContent` is validated — a missing field raises `ValidationError`
+  rather than shipping a malformed payload;
+- the image bytes are carried **once**, in `ImageContent`. Putting base64 into
+  `structuredContent` as well would double a ~540 kB payload for no gain.
+
+The same shape covers any future tool returning bytes plus facts — a saved
+`.pse` with its size and object count, an exported movie, a coordinates dump.
+
+**Consequence for `render_png`:** the current `structured_output=False` is not
+the end state. It should be revisited as `Annotated[CallToolResult, RenderMeta]`
+so the render metadata stops being prose. That is a self-contained change and a
+good first exercise of this design, independent of the selection work below.
 
 ## The model layer
 
@@ -179,8 +236,11 @@ unchanged. That matters: it is the path a user takes when they already know the
 PyMOL syntax, and the skill's whole "translate the request into literal PyMOL"
 contract depends on it.
 
-Four stages, each shippable alone:
+Five stages, each shippable alone:
 
+0. **Retype `render_png`'s metadata** as `Annotated[CallToolResult, RenderMeta]`.
+   Smallest possible slice, touches one tool, proves the structured-output path
+   in production before anything depends on it.
 1. **Add introspection tools.** Pure addition — new plugin dispatcher entries,
    new typed MCP tools. Nothing existing changes. This alone removes most of the
    skill's selection prose, because those sections exist to work around missing
