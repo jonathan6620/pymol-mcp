@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import io
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel
 
-from pymol_mcp.api import RenderMeta
+from pymol_mcp.api import MovieMeta, RenderMeta
 from pymol_mcp.models import (
     CommandDef,
     ErrorCategory,
@@ -1569,6 +1570,210 @@ def _image_result(
         ],
         structuredContent=meta.model_dump(mode="json"),
     )
+
+
+##############################################################################
+# MOVIE RENDERING
+##############################################################################
+
+# Caps exist because this is the one tool that can trivially produce a
+# hundred-megabyte response. When a cap bites we downscale first and drop frames
+# second, and always say so in the metadata -- a silently shortened movie reads
+# as a complete one.
+MOVIE_MAX_FRAMES = 120
+MOVIE_MAX_PIXELS = 4_000_000
+MOVIE_MAX_BYTES = 8_000_000
+
+
+def _encode_animation(
+    frame_paths: list[Path], destination: Path, fps: int, fmt: str
+) -> int:
+    """Encode stills into an animation. Returns the byte size written.
+
+    Pillow is a server dependency rather than borrowed from PyMOL's environment:
+    PyMOL builds do not guarantee it, and the server already reads the files
+    PyMOL writes (see _png_dimensions).
+    """
+    from PIL import Image as PILImage
+
+    frames = [PILImage.open(p).convert("RGB") for p in frame_paths]
+    if not frames:
+        raise RuntimeError("No frames were rendered")
+    buffer = io.BytesIO()
+    frames[0].save(
+        buffer,
+        format=fmt,
+        save_all=True,
+        append_images=frames[1:],
+        duration=max(1, round(1000 / fps)),
+        loop=0,
+        optimize=True,
+    )
+    data = buffer.getvalue()
+    destination.write_bytes(data)
+    return len(data)
+
+
+def _verify_animation(path: Path, expected_frames: int) -> None:
+    """Reopen and count frames. A successful save is not proof of content."""
+    from PIL import Image as PILImage
+
+    with PILImage.open(path) as check:
+        actual = getattr(check, "n_frames", 1)
+    if actual != expected_frames:
+        raise RuntimeError(
+            f"Animation wrote {actual} frames, expected {expected_frames}: {path}"
+        )
+
+
+def _render_movie(
+    ctx: Context,
+    filename: str,
+    mode: str = "spin",
+    frames: int = 24,
+    axis: str = "y",
+    width: int = 480,
+    height: int = 360,
+    fps: int = 10,
+    ray: bool = False,
+    start_state: int = 1,
+    instance: int | None = None,
+) -> tuple[MovieMeta, Path]:
+    """Render frames by driving existing commands, then encode them."""
+    if mode not in ("spin", "states"):
+        raise ValueError("mode must be 'spin' or 'states'")
+    if axis not in ("x", "y", "z"):
+        raise ValueError("axis must be x, y or z")
+    if frames < 2:
+        raise ValueError("A movie needs at least 2 frames")
+    if fps < 1 or fps > 60:
+        raise ValueError("fps must be between 1 and 60")
+    if not (1 <= width <= 4000 and 1 <= height <= 4000):
+        raise ValueError("Width and height must each be between 1 and 4000")
+
+    path = Path(filename).expanduser().resolve()
+    fmt = {".gif": "GIF", ".webp": "WEBP"}.get(path.suffix.lower())
+    if fmt is None:
+        raise ValueError("render_movie requires a .gif or .webp filename")
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    notes: list[str] = []
+    dropped = 0
+    if frames > MOVIE_MAX_FRAMES:
+        dropped = frames - MOVIE_MAX_FRAMES
+        notes.append(f"frame count capped at {MOVIE_MAX_FRAMES} (dropped {dropped})")
+        frames = MOVIE_MAX_FRAMES
+    if width * height > MOVIE_MAX_PIXELS:
+        scale = (MOVIE_MAX_PIXELS / (width * height)) ** 0.5
+        width, height = max(1, int(width * scale)), max(1, int(height * scale))
+        notes.append(f"downscaled to {width}x{height} to stay under the pixel cap")
+
+    connection = get_pymol_connection(instance)
+    step = 360.0 / frames
+    work = Path(tempfile.mkdtemp(prefix=f".{path.stem}-frames-", dir=path.parent))
+    frame_paths: list[Path] = []
+    try:
+        for index in range(frames):
+            if mode == "spin":
+                if index:  # first frame is the current view
+                    connection.send_command(
+                        "turn", {"axis": axis, "angle": step},
+                        source=f"turn {axis}, {step:g}",
+                    )
+            else:
+                connection.send_command(
+                    "frame", {"frame_number": start_state + index},
+                    source=f"frame {start_state + index}",
+                )
+            frame_path = work / f"f{index:04d}.png"
+            response = connection.send_command(
+                "png",
+                {
+                    "filename": str(frame_path),
+                    "width": width,
+                    "height": height,
+                    "ray": int(ray),
+                    "quiet": 1,
+                },
+                source=f"png {frame_path}",
+            )
+            _direct_output(response)
+            if not frame_path.exists():
+                raise RuntimeError(f"PyMOL did not write frame {index}: {frame_path}")
+            frame_paths.append(frame_path)
+
+        size = _encode_animation(frame_paths, path, fps, fmt)
+        while size > MOVIE_MAX_BYTES and len(frame_paths) > 2:
+            # Drop every other frame rather than truncating the end, so the
+            # motion still completes -- it just plays coarser.
+            frame_paths = frame_paths[::2]
+            dropped = frames - len(frame_paths)
+            size = _encode_animation(frame_paths, path, fps, fmt)
+            notes.append(
+                f"thinned to {len(frame_paths)} frames to stay under the size cap"
+            )
+        _verify_animation(path, len(frame_paths))
+    finally:
+        for frame_path in frame_paths:
+            frame_path.unlink(missing_ok=True)
+        for leftover in work.glob("*.png"):
+            leftover.unlink(missing_ok=True)
+        work.rmdir()
+
+    meta = MovieMeta(
+        path=str(path),
+        mode=mode,  # type: ignore[arg-type]
+        frames=len(frame_paths),
+        fps=fps,
+        width=width,
+        height=height,
+        bytes=size,
+        ray=ray,
+        truncated=bool(notes),
+        dropped_frames=dropped,
+        note="; ".join(notes) or None,
+    )
+    return meta, path
+
+
+@mcp.tool()
+def render_movie(
+    ctx: Context,
+    filename: str,
+    mode: str = "spin",
+    frames: int = 24,
+    axis: str = "y",
+    width: int = 480,
+    height: int = 360,
+    fps: int = 10,
+    ray: bool = False,
+    start_state: int = 1,
+    instance: int | None = None,
+) -> Annotated[CallToolResult, MovieMeta]:
+    """Render an animation and return both its metadata and the animation.
+
+    `mode="spin"` turns the camera a full 360 degrees about `axis`;
+    `mode="states"` steps through object states from `start_state`.
+
+    The result comes back as an animated GIF in an ImageContent block, because
+    MCP has no video content type but a GIF is an image. Write a `.webp`
+    filename instead for much better compression, if the client renders it.
+
+    Defaults are deliberately small and un-raytraced: a ray-traced frame takes
+    seconds, so 24 of them is a minute of waiting for a preview.
+    """
+    meta, path = _render_movie(
+        ctx, filename, mode, frames, axis, width, height, fps, ray,
+        start_state, instance,
+    )
+    summary = (
+        f"Rendered {meta.frames} frames at {meta.width}x{meta.height}, "
+        f"{meta.fps} fps, {meta.bytes / 1_000_000:.1f} MB -> {meta.path}"
+    )
+    if meta.note:
+        summary += f" ({meta.note})"
+    mime = "image/webp" if path.suffix.lower() == ".webp" else "image/gif"
+    return _image_result(meta, summary, path, mime)
 
 
 @mcp.tool()
