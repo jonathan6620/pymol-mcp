@@ -311,6 +311,16 @@ class TestPatternMatchingValid:
         assert cmd == "png"
         assert args == {"filename": "/tmp/image.png"}
 
+    def test_png_preserves_render_options(self):
+        cmd, args = parse_pymol_input(
+            "png /tmp/image.png, width=2400, height=2000, dpi=300, ray=1"
+        )
+        assert cmd == "png"
+        assert args == {
+            "filename": "/tmp/image.png",
+            "options": "width=2400, height=2000, dpi=300, ray=1",
+        }
+
     # --- Selection & Object manipulation ---
 
     def test_select(self):

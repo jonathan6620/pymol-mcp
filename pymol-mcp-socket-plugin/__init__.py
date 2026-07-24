@@ -11,6 +11,7 @@ from __future__ import absolute_import, print_function
 
 import ast
 import json
+import math
 import os
 import socket
 import threading
@@ -454,6 +455,82 @@ def _reject_control_characters(value):
         raise ValueError("selection may not contain newlines or control characters")
 
 
+def _parse_png_options(options):
+    """Parse safe ``cmd.png`` keyword or positional arguments."""
+    if options is None or not str(options).strip():
+        return {}
+
+    text = str(options).strip()
+    _reject_control_characters(text)
+    positional_names = ("width", "height", "dpi", "ray", "quiet")
+    converters = {
+        "width": int,
+        "height": int,
+        "dpi": float,
+        "ray": int,
+        "quiet": int,
+    }
+    parsed = {}
+    positional_index = 0
+
+    for raw_part in text.split(","):
+        part = raw_part.strip()
+        if not part:
+            raise ValueError("PNG options must not contain empty arguments")
+        if "=" in part:
+            name, value = (piece.strip() for piece in part.split("=", 1))
+            if name not in converters:
+                raise ValueError("unsupported PNG option: %s" % name)
+        else:
+            if positional_index >= len(positional_names):
+                raise ValueError("too many positional PNG options")
+            name = positional_names[positional_index]
+            value = part
+            positional_index += 1
+
+        if name in parsed:
+            raise ValueError("duplicate PNG option: %s" % name)
+        try:
+            parsed[name] = converters[name](value)
+        except (TypeError, ValueError):
+            raise ValueError("invalid value for PNG option %s: %s" % (name, value))
+
+    width = parsed.get("width", 0)
+    height = parsed.get("height", 0)
+    if not 0 <= width <= 10_000 or not 0 <= height <= 10_000:
+        raise ValueError("PNG width and height must be between 0 and 10000")
+    if width and height and width * height > 64_000_000:
+        raise ValueError("PNG output may not exceed 64 megapixels")
+    if "dpi" in parsed:
+        dpi = parsed["dpi"]
+        if not math.isfinite(dpi) or (dpi != -1 and not 1 <= dpi <= 2400):
+            raise ValueError("PNG dpi must be -1 or between 1 and 2400")
+    if "ray" in parsed and parsed["ray"] not in (0, 1):
+        raise ValueError("PNG ray must be 0 or 1")
+    if "quiet" in parsed and parsed["quiet"] not in (0, 1):
+        raise ValueError("PNG quiet must be 0 or 1")
+    return parsed
+
+
+def _parse_view(value):
+    """Validate a camera view without evaluating caller-provided Python."""
+    if isinstance(value, str):
+        _reject_control_characters(value)
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            raise ValueError("view must be a JSON list of 18 numbers")
+    if not isinstance(value, (list, tuple)) or len(value) != 18:
+        raise ValueError("view must contain exactly 18 numbers")
+    try:
+        result = tuple(float(item) for item in value)
+    except (TypeError, ValueError):
+        raise ValueError("view must contain only numbers")
+    if not all(math.isfinite(item) for item in result):
+        raise ValueError("view values must be finite")
+    return result
+
+
 def check_atom_expression(expression, coordinates=False):
     """Raise ValueError unless the expression is a safe atom-property formula.
 
@@ -664,7 +741,38 @@ def build_command_dispatcher(cmd):
         return cmd.save(args.get("filename", ""), args.get("selection", "all"), state)
 
     def _png(args):
-        return cmd.png(args.get("filename", "output.png"))
+        direct = {
+            name: args[name]
+            for name in ("width", "height", "dpi", "ray", "quiet")
+            if name in args
+        }
+        if direct and args.get("options"):
+            raise ValueError("use either typed PNG arguments or options, not both")
+        options = (
+            _parse_png_options(
+                ", ".join("%s=%s" % (name, value) for name, value in direct.items())
+            )
+            if direct
+            else _parse_png_options(args.get("options", ""))
+        )
+        return cmd.png(args.get("filename", "output.png"), **options)
+
+    def _get_view(args):
+        return json.dumps([float(item) for item in cmd.get_view()])
+
+    def _set_view(args):
+        return cmd.set_view(_parse_view(args.get("view")))
+
+    def _get_setting(args):
+        name = args.get("name", "")
+        if (
+            not isinstance(name, str)
+            or not name
+            or (not name[0].isalpha() and name[0] != "_")
+            or not all(character.isalnum() or character == "_" for character in name)
+        ):
+            raise ValueError("invalid setting name")
+        return json.dumps({"name": name, "value": cmd.get(name)})
 
     def _select(args):
         return cmd.select(args.get("name", "sele"), args.get("selection", "all"))
@@ -929,6 +1037,9 @@ def build_command_dispatcher(cmd):
         "fetch": _fetch,
         "save": _save,
         "png": _png,
+        "get_view": _get_view,
+        "set_view": _set_view,
+        "get_setting": _get_setting,
         "select": _select,
         "deselect": _deselect,
         "create": _create,

@@ -4,10 +4,14 @@ import logging
 import os
 import re
 import socket
+import struct
+import tempfile
+import zlib
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import Context, FastMCP, Image
 
 from pymol_mcp.models import (
     CommandDef,
@@ -316,6 +320,24 @@ PYMOL_COMMANDS: dict[str, CommandDef] = {
             ParameterDef(name="filename", required=True),
             ParameterDef(name="options", required=False),
         ],
+        check_selection=False,
+    ),
+    "get_view": CommandDef(
+        description="Returns the current 18-value camera view",
+        pattern=r"^get_view$",
+        parameters=[],
+        check_selection=False,
+    ),
+    "set_view": CommandDef(
+        description="Restores an 18-value camera view encoded as a JSON list",
+        pattern=r"^set_view\s+(.+)$",
+        parameters=[ParameterDef(name="view", required=True)],
+        check_selection=False,
+    ),
+    "get_setting": CommandDef(
+        description="Returns the current value of a named PyMOL setting",
+        pattern=r"^get_setting\s+([A-Za-z_]\w*)$",
+        parameters=[ParameterDef(name="name", required=True)],
         check_selection=False,
     ),
     # SELECTION OPERATIONS
@@ -912,7 +934,11 @@ class PyMOLConnection:
                 self._recv_buffer = b""
 
     def send_command(
-        self, command: str, args: dict[str, Any], source: str | None = None
+        self,
+        command: str,
+        args: dict[str, Any],
+        source: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """
         Sends a structured command to PyMOL via the socket plugin.
@@ -934,7 +960,7 @@ class PyMOLConnection:
             # existed whenever it is unset, so an older plugin sees no change.
             payload = request.model_dump(exclude_none=True)
             sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-            sock.settimeout(10.0)
+            sock.settimeout(timeout or _command_timeout(command, args))
             while b"\n" not in self._recv_buffer:
                 chunk = sock.recv(4096)
                 if not chunk:
@@ -956,6 +982,26 @@ class PyMOLConnection:
 # millisecond because a closed port refuses immediately.
 PORT_RANGE = range(9876, 9896)
 SCAN_TIMEOUT = 0.2
+COMMAND_TIMEOUT = 10.0
+RENDER_TIMEOUT = 300.0
+MAX_RENDER_TIMEOUT = 1800.0
+
+
+def _command_timeout(command: str, args: dict[str, Any]) -> float:
+    """Scale render waits by output pixels; keep interactive commands snappy."""
+    if command not in {"ray", "draw", "png", "mpng"}:
+        return COMMAND_TIMEOUT
+    if command == "mpng":
+        return MAX_RENDER_TIMEOUT
+    try:
+        width = int(args.get("width", 0))
+        height = int(args.get("height", 0))
+    except (TypeError, ValueError):
+        return RENDER_TIMEOUT
+    if width <= 0 or height <= 0:
+        return RENDER_TIMEOUT
+    megapixels = width * height / 1_000_000
+    return min(MAX_RENDER_TIMEOUT, max(RENDER_TIMEOUT, 60.0 + 60.0 * megapixels))
 
 
 def discover_instances() -> list[dict[str, Any]]:
@@ -1167,6 +1213,95 @@ mcp = FastMCP(
 ##############################################################################
 
 
+def _execute_user_command(
+    ctx: Context,
+    user_input: str,
+    instance: int | None = None,
+    connection: PyMOLConnection | None = None,
+) -> tuple[str, bool, PyMOLConnection | None]:
+    """Parse and execute one command, preserving structured success state."""
+    try:
+        result = parse_pymol_input(user_input)
+        command_name = result.command
+        args = result.args
+    except ValueError as ve:
+        return (
+            f"No recognized PyMOL command or parameter issue: {ve}",
+            False,
+            connection,
+        )
+    except Exception as e:
+        return f"Parsing error: {e}", False, connection
+
+    if command_name == "help":
+        cmd_obj = args.get("command", "")
+        if cmd_obj and cmd_obj in PYMOL_COMMANDS:
+            return (
+                f"Help for {cmd_obj}: {PYMOL_COMMANDS[cmd_obj].description}",
+                True,
+                connection,
+            )
+        return (
+            "Available commands: " + ", ".join(sorted(PYMOL_COMMANDS.keys())),
+            True,
+            connection,
+        )
+
+    try:
+        conn = connection or get_pymol_connection(instance)
+        if command_name == "color_ss":
+            sel = args.get("selection", "all")
+            for color, ss in [("red", "h"), ("yellow", "s"), ("green", "l+")]:
+                ss_sel = f"(ss {ss}) and ({sel})" if sel != "all" else f"ss {ss}"
+                response = conn.send_command(
+                    "color",
+                    {"color": color, "selection": ss_sel},
+                    source=f"color {color}, {ss_sel}",
+                )
+                parsed = SocketResponse(**response)
+                if parsed.status != "success":
+                    return (
+                        f"Command error: {parsed.message or 'Unknown error'}",
+                        False,
+                        conn,
+                    )
+            return (
+                f"Colored by secondary structure ({sel}): "
+                "helices=red, sheets=yellow, loops=green",
+                True,
+                conn,
+            )
+
+        response = conn.send_command(command_name, args, source=user_input.strip())
+        parsed = SocketResponse(**response)
+        if parsed.status != "success":
+            message = parsed.message or "Unknown error"
+            check_error = analyze_pymol_output(message)
+            if check_error:
+                return f"Command failed: {check_error}", False, conn
+            return f"Command error: {message}", False, conn
+
+        result_value = parsed.result
+        output = (
+            result_value.get("output", "")
+            if isinstance(result_value, dict)
+            else str(result_value)
+            if result_value
+            else ""
+        )
+        check_error = analyze_pymol_output(output)
+        if check_error:
+            return (
+                "PyMOL command completed but possible error:\n"
+                f"{check_error}\nRaw Output:\n{output}",
+                False,
+                conn,
+            )
+        return output or "Command executed (no output).", True, conn
+    except Exception as e:
+        return f"Execution error: {e}", False, connection
+
+
 @mcp.tool()
 def parse_and_execute(
     ctx: Context, user_input: str, instance: int | None = None
@@ -1210,71 +1345,212 @@ def parse_and_execute(
 
     Returns PyMOL's output, or a message describing the parse/execution failure.
     """
-    try:
-        result = parse_pymol_input(user_input)
-        command_name = result.command
-        args = result.args
-    except ValueError as ve:
-        return f"No recognized PyMOL command or parameter issue: {ve}"
-    except Exception as e:
-        return f"Parsing error: {e}"
+    output, _, _ = _execute_user_command(ctx, user_input, instance)
+    return output
 
-    # Handle help locally
-    if command_name == "help":
-        cmd_obj = args.get("command", "")
-        if cmd_obj and cmd_obj in PYMOL_COMMANDS:
-            return f"Help for {cmd_obj}: {PYMOL_COMMANDS[cmd_obj].description}"
-        return "Available commands: " + ", ".join(sorted(PYMOL_COMMANDS.keys()))
 
-    # Handle composite commands locally
-    if command_name == "color_ss":
-        sel = args.get("selection", "all")
-        try:
-            conn = get_pymol_connection(instance)
-            results = []
-            for color, ss in [("red", "h"), ("yellow", "s"), ("green", "l+")]:
-                ss_sel = f"(ss {ss}) and ({sel})" if sel != "all" else f"ss {ss}"
-                resp = conn.send_command(
-                    "color",
-                    {"color": color, "selection": ss_sel},
-                    source=f"color {color}, {ss_sel}",
-                )
-                results.append(f"{ss}: {resp.get('status', 'error')}")
-            return (
-                f"Colored by secondary structure ({sel}): "
-                "helices=red, sheets=yellow, loops=green"
-            )
-        except Exception as e:
-            return f"Execution error: {e}"
+def _execute_batch(
+    ctx: Context,
+    commands: list[str],
+    instance: int | None = None,
+    stop_on_error: bool = True,
+) -> str:
+    """Execute up to 100 ordinary allowlisted PyMOL commands in order."""
+    if not commands:
+        return "No commands supplied."
+    if len(commands) > 100:
+        return "Batch rejected: at most 100 commands are allowed."
 
-    try:
-        conn = get_pymol_connection(instance)
-        response = conn.send_command(command_name, args, source=user_input.strip())
-        resp = SocketResponse(**response)
-        if resp.status == "success":
-            res = resp.result
-            out = (
-                res.get("output", "")
-                if isinstance(res, dict)
-                else str(res)
-                if res
-                else ""
-            )
-            check_err = analyze_pymol_output(out)
-            if check_err:
-                return (
-                    "PyMOL command completed but possible error:\n"
-                    f"{check_err}\nRaw Output:\n{out}"
-                )
-            return out or "Command executed (no output)."
+    results = []
+    connection = None
+    for index, command in enumerate(commands, start=1):
+        if not isinstance(command, str) or not command.strip():
+            output = "Parsing error: each batch item must be a non-empty string"
+            succeeded = False
         else:
-            msg = resp.message or "Unknown error"
-            check_err = analyze_pymol_output(msg)
-            if check_err:
-                return f"Command failed: {check_err}"
-            return f"Command error: {msg}"
-    except Exception as e:
-        return f"Execution error: {e}"
+            output, succeeded, connection = _execute_user_command(
+                ctx, command, instance, connection
+            )
+        results.append(f"{index}. {command!r}: {output}")
+        if not succeeded and stop_on_error:
+            results.append(f"Stopped after command {index}.")
+            break
+    return "\n".join(results)
+
+
+@mcp.tool()
+def execute_batch(
+    ctx: Context,
+    commands: list[str],
+    instance: int | None = None,
+    stop_on_error: bool = True,
+) -> str:
+    """Execute up to 100 ordinary allowlisted PyMOL commands in order."""
+    return _execute_batch(ctx, commands, instance, stop_on_error)
+
+
+def _direct_output(response: dict[str, Any]) -> str:
+    parsed = SocketResponse(**response)
+    if parsed.status != "success":
+        raise RuntimeError(parsed.message or "Unknown PyMOL error")
+    if isinstance(parsed.result, dict):
+        return str(parsed.result.get("output", ""))
+    return str(parsed.result or "")
+
+
+@mcp.tool()
+def get_view(ctx: Context, instance: int | None = None) -> list[float]:
+    """Return the current PyMOL camera as an 18-value list."""
+    response = get_pymol_connection(instance).send_command("get_view", {})
+    value = json.loads(_direct_output(response))
+    if not isinstance(value, list) or len(value) != 18:
+        raise RuntimeError("PyMOL returned an invalid camera view")
+    return [float(item) for item in value]
+
+
+@mcp.tool()
+def set_view(
+    ctx: Context, view: list[float], instance: int | None = None
+) -> str:
+    """Restore a camera previously returned by get_view."""
+    if len(view) != 18:
+        return "View rejected: exactly 18 numeric values are required."
+    response = get_pymol_connection(instance).send_command(
+        "set_view", {"view": [float(item) for item in view]}
+    )
+    _direct_output(response)
+    return "Camera view restored."
+
+
+@mcp.tool()
+def get_setting(
+    ctx: Context, name: str, instance: int | None = None
+) -> Any:
+    """Return one named PyMOL setting without changing the scene."""
+    if not re.fullmatch(r"[A-Za-z_]\w*", name):
+        raise ValueError(
+            "Setting name must contain only letters, numbers, and underscores"
+        )
+    response = get_pymol_connection(instance).send_command(
+        "get_setting", {"name": name}
+    )
+    return json.loads(_direct_output(response))["value"]
+
+
+def _png_dimensions(path: Path) -> tuple[int, int]:
+    """Validate the PNG chunk stream and return IHDR dimensions."""
+    with path.open("rb") as handle:
+        if handle.read(8) != b"\x89PNG\r\n\x1a\n":
+            raise RuntimeError(f"PyMOL did not create a valid PNG: {path}")
+        dimensions = None
+        saw_idat = False
+        first_chunk = True
+        while True:
+            chunk_header = handle.read(8)
+            if len(chunk_header) != 8:
+                raise RuntimeError(f"PNG is truncated before IEND: {path}")
+            length, chunk_type = struct.unpack(">I4s", chunk_header)
+            data = handle.read(length)
+            crc_bytes = handle.read(4)
+            if len(data) != length or len(crc_bytes) != 4:
+                raise RuntimeError(f"PNG contains a truncated chunk: {path}")
+            expected_crc = struct.unpack(">I", crc_bytes)[0]
+            actual_crc = zlib.crc32(chunk_type)
+            actual_crc = zlib.crc32(data, actual_crc) & 0xFFFFFFFF
+            if actual_crc != expected_crc:
+                raise RuntimeError(f"PNG contains an invalid chunk checksum: {path}")
+            if first_chunk:
+                if chunk_type != b"IHDR" or length != 13:
+                    raise RuntimeError(f"PNG does not begin with a valid IHDR: {path}")
+                dimensions = struct.unpack(">II", data[:8])
+                first_chunk = False
+            elif chunk_type == b"IHDR":
+                raise RuntimeError(f"PNG contains more than one IHDR: {path}")
+            if chunk_type == b"IDAT":
+                saw_idat = True
+            if chunk_type == b"IEND":
+                if length != 0 or not saw_idat or dimensions is None:
+                    raise RuntimeError(f"PNG has an invalid IEND sequence: {path}")
+                return dimensions
+
+
+def _render_png(
+    ctx: Context,
+    filename: str,
+    width: int = 1200,
+    height: int = 1200,
+    dpi: float = 300.0,
+    ray: bool = True,
+    instance: int | None = None,
+) -> list[Any]:
+    """Render a typed PNG and return both verified metadata and the image."""
+    if not (1 <= width <= 10_000 and 1 <= height <= 10_000):
+        raise ValueError("Width and height must each be between 1 and 10000")
+    if width * height > 64_000_000:
+        raise ValueError("Render rejected: output may not exceed 64 megapixels")
+    if not (1 <= dpi <= 2400):
+        raise ValueError("DPI must be between 1 and 2400")
+
+    path = Path(filename).expanduser().resolve()
+    if path.suffix.lower() != ".png":
+        raise ValueError("render_png requires a .png filename")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.stem}-", suffix=".png", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    temporary_path.unlink()
+    args = {
+        "filename": str(temporary_path),
+        "width": width,
+        "height": height,
+        "dpi": dpi,
+        "ray": int(ray),
+        "quiet": 1,
+    }
+    try:
+        response = get_pymol_connection(instance).send_command(
+            "png",
+            args,
+            source=f"png {path}, width={width}, height={height}, "
+            f"dpi={dpi}, ray={int(ray)}, quiet=1",
+        )
+        output = _direct_output(response).strip()
+        try:
+            succeeded = float(output) > 0
+        except ValueError:
+            succeeded = False
+        if not succeeded:
+            raise RuntimeError(f"PyMOL reported that PNG rendering failed: {output!r}")
+        actual_width, actual_height = _png_dimensions(temporary_path)
+        if (actual_width, actual_height) != (width, height):
+            raise RuntimeError(
+                "PyMOL wrote unexpected dimensions: "
+                f"{actual_width}x{actual_height}, requested {width}x{height}"
+            )
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return [
+        f"Rendered {path} ({actual_width}x{actual_height}, {dpi:g} DPI, "
+        f"ray={'on' if ray else 'off'})",
+        Image(path=path),
+    ]
+
+
+@mcp.tool()
+def render_png(
+    ctx: Context,
+    filename: str,
+    width: int = 1200,
+    height: int = 1200,
+    dpi: float = 300.0,
+    ray: bool = True,
+    instance: int | None = None,
+) -> list[Any]:
+    """Render a typed PNG and return both verified metadata and the image."""
+    return _render_png(ctx, filename, width, height, dpi, ray, instance)
 
 
 ##############################################################################

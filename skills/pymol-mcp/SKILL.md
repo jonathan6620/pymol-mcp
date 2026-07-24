@@ -28,9 +28,8 @@ Prefer the user's own launcher, which already has the flags right:
 type pymolq >/dev/null 2>&1 && pymolq
 ```
 
-`pymolq` is a common personal shortcut for `pymol -q "$@" >/dev/null 2>&1 &`.
-It may be a shell function rather than an alias, so `type` is the reliable test.
-Failing that:
+`pymolq` may be a shell function rather than an alias, so `type` is the
+reliable test. Failing that:
 
 | Platform | Command |
 |---|---|
@@ -71,8 +70,7 @@ for pattern in [
 "
 ```
 
-That covers Windows too. `make install PYMOL=/full/path/to/pymol` takes the same
-path if the user needs to reinstall the plugin against it.
+`make install PYMOL=/full/path/to/pymol` takes the same path when reinstalling.
 
 ### When macOS launches PyMOL but shows no window
 
@@ -142,9 +140,12 @@ check `list_instances` first in case the one they want already exists.
 ## The server is not a natural-language interface
 
 `mcp__pymol__parse_and_execute` matches input against a fixed table of command
-patterns. Anything unrecognised is rejected, not interpreted.
+patterns. Anything unrecognised is rejected, not interpreted. Use
+`mcp__pymol__execute_batch` for a known ordered setup sequence; it applies the
+same parser and allowlist to every item and can stop at the first failure.
 
-- **One command per call.** Split multi-step requests.
+- **One command per batch item.** Never combine commands with semicolons or
+  newlines.
 - **Selections are a comma-separated second argument**: `show cartoon, chain A`,
   never `show cartoon for chain A`.
 - **A selection containing a comma must use `+`**: `resi 1+2+3`.
@@ -167,21 +168,27 @@ and `'A' if chain == 'B' else chain` are fine; attribute access, subscripting,
 lambdas, comprehensions and any call outside `str int float abs round len min
 max` are rejected.
 
-There is no way to read state back *through the server*. `select` returning an
-atom count is the only introspection available, and rendering an image is the
-only way to see the scene. Two things off to the side help: the structure file
-is on disk and you have ordinary file tools, and everything you have already run
-is logged. See "Read the structure file directly" and "What you ran is on disk".
+Use `mcp__pymol__get_view` and `mcp__pymol__set_view` to preserve an exact
+camera across experiments or restarts. Use `mcp__pymol__get_setting` to inspect
+one named setting. The server still cannot enumerate arbitrary atom properties;
+use `select` for counts, parse the structure file for inventories, and inspect a
+render for visual state.
 
 ## Always verify by rendering
 
-After any visual change, render and actually look at it:
+After any visual change, render and actually look at it. Prefer the typed
+`mcp__pymol__render_png` tool because it verifies the written dimensions and
+returns the image directly:
 
 ```
-png /path/to/scratchpad/check.png, width=1000, height=800, dpi=150, ray=1
+filename=/path/to/scratchpad/check.png width=1000 height=800 dpi=150 ray=true
 ```
 
-Then `Read` the PNG. Never claim a visual change worked without looking.
+Never claim a visual change worked without looking.
+
+For paper-matched figures, ray-tracing experiments, and publication exports,
+read [references/publication-rendering.md](references/publication-rendering.md)
+before styling or rendering.
 
 **Delete named selections before rendering.** A `select` leaves magenta
 indicator dots on every selected atom, and they show up in the ray-traced image
@@ -288,6 +295,9 @@ recipe rather than relying on the live window. Include loading, representations,
 colors, object creation, orientation and the final render. This makes recovery
 from an accidentally closed window deterministic; replay broad colors before
 the narrow highlight colors they would otherwise overwrite.
+
+Also capture `get_view` after framing. Restoring that 18-value list with
+`set_view` is faster and more exact than repeating `orient` and manual turns.
 
 ## Recovering a session that was cleared
 
