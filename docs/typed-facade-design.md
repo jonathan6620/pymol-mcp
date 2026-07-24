@@ -16,10 +16,21 @@ under contact with the code -- see "What changed in implementation" at the end.
 > but modest cut.
 >
 > The work was still worth doing, for a different reason than the one argued
-> here: it added eight capabilities the server did not have (get_chains, count,
+> here. It added eight capabilities the server did not have (get_chains, count,
 > list_residues, contacts, get_gaps, render_movie, enable, disable) and fixed two
-> plugin bugs. It is capability work, not prose-reduction work. Judge the design
-> below on that.
+> plugin bugs. But the lasting reason is where capability lands *next*.
+>
+> The skill had been acting as the overflow buffer for everything the API could
+> not do. Three of its sections existed only because a tool was missing: chain
+> enumeration ("run util.cbc for the IDs it prints while recolouring, then undo
+> its colours"), counting ("run select and read the atom count out of the reply
+> text") and gaps ("parse the structure file by hand"). None of that is PyMOL
+> knowledge — it is the shape of a hole, written down.
+>
+> With a typed surface in place, the next gap gets filled as a tool instead of
+> as another paragraph. That matters because a tool ships its schema to the
+> caller, whereas a paragraph only works if someone read it. Judge the design
+> below on extensibility, not on brevity.
 
 The server exposes PyMOL's selection language as strings. That language has
 sharp edges, and because a malformed selection is usually *valid* — just not the
