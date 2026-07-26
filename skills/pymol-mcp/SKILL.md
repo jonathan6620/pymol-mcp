@@ -362,17 +362,135 @@ and every later figure of that object renders washed out, with no obvious cause
 — the colours are right, they are just faded. `set cartoon_transparency, 0`
 alone does **not** fix it.
 
-`unset` is not in the command table, so the fix is to overwrite the setting on a
-selection that covers the one that set it:
+`unset` is not in the command table, so the fix is to overwrite the setting. But
+**you must overwrite it with the same selection expression that set it**, and
+the two obvious shortcuts both fail silently. Tested directly, setting 0.8 on
+`bac and chain A and resi 540-606` and then trying to clear it:
+
+| Clearing command | Result |
+|---|---|
+| `set cartoon_transparency, 0, bac` | **still transparent** |
+| `set cartoon_transparency, 0, all` | **still transparent** |
+| `set cartoon_transparency, 0, bac and chain A` | cleared |
+| `set cartoon_transparency, 0, bac and chain A and resi 540-606` | cleared |
+
+A bare object name writes an *object-level* setting, while a selection
+expression writes *atom-level* settings, and atom-level wins — so clearing at
+object level cannot reach it. `all` fails too, which is the surprising one, so
+do not reach for it as a blanket reset.
+
+**Reset by re-running your own `set` with the value back at 0**, on the same
+selection. If you have lost track of which selection it was, the session log
+has it:
 
 ```
-set cartoon_transparency, 0, <object>
+grep cartoon_transparency ~/.pymol-mcp/history.jsonl
 ```
+
+A **global** `set cartoon_transparency, 0.6` — no selection at all — works
+reliably and applies to every atom that carries no override. Combined with the
+layering above that is a genuinely good pattern rather than a workaround: set
+the global to ghost everything, and pin the features you want crisp to 0 with a
+selection-scoped `set`. Ghosted backdrop, solid highlights, no representation
+changes needed.
+
+> **Do not judge "did the setting apply?" by eye at moderate values.** Chasing
+> this, a cartoon at `0.5` against a light background was repeatedly misread as
+> opaque, and a whole false mechanism — "the atoms are stuck, later `set`s are
+> being ignored" — was built on top of that misreading. Setting the same
+> selection to `0.95` made it vanish instantly and showed the `set` had been
+> working the entire time.
+>
+> If you need to know whether a scoped `set` landed, **test with an extreme
+> value (0.95), not a plausible one.** Then dial back to the value you actually
+> want. Mid-range transparency differences are not reliably readable in a ray
+> render, which makes them a poor diagnostic and an easy way to talk yourself
+> into a bug that is not there.
+
+**`get_setting` cannot diagnose this.** It reports the global layer only: with
+the HNH visibly transparent on screen, `get_setting cartoon_transparency`
+returned `0.00000`. A clean reading there does not mean the scene is clean —
+you have to look at a render.
 
 The same is true of `stick_transparency`, `sphere_transparency`,
 `cartoon_tube_radius` and any other per-object setting. If a render is
 inexplicably pale or oddly shaped and the colours are correct, suspect a
 leftover scoped `set` from an earlier view.
+
+### When transparency works, and when to hide instead
+
+Transparency has a reputation here for not decluttering, and the failure is
+real: `cartoon_transparency 0.85` on a 643-nucleotide RNA cartoon still let the
+RNA dominate the frame, and hiding it outright was the only fix.
+
+But that is one case, not a rule about transparency in general.
+
+**Default to transparent full cartoon.** It looks better than a tube and in
+practice it usually reads fine — a domain-sized selection at `0.5`, or a whole
+chain pushed to `0.85`–`0.9`, will normally sit back far enough. Raise the
+transparency before you change the representation.
+
+Only if cartoon still competes at high transparency is it worth thinning the
+geometry, and then `cartoon tube` with a small `cartoon_tube_radius` is the
+fallback — broad ribbons and helices carry more edge and shading than a 0.2 Å
+tube, so there is less left to read as clutter. Treat that as a last resort for
+a crowded frame, not a default.
+
+> **Do not trust a single side-by-side here, including your own.** The
+> comparison that produced the original "tube is better" advice was confounded:
+> cartoon was judged at `0.75` and the tube at `0.88`, so it measured
+> transparency, not representation. Change **one** thing, hold camera and
+> transparency fixed, and re-render — and expect the answer to depend on the
+> view rather than to generalise.
+
+**Transparency works when you want to see *both* layers; it fails when you want
+one layer gone.** Three situations:
+
+**1. Superposed copies of the same thing — full cartoon, both transparent.**
+This is where it works best. Two conformations of one domain, opaque, means
+whichever is in front simply hides the other and the comparison is lost. At
+`cartoon_transparency 0.5` on *both*, the two interpenetrate and you can read
+where they agree and where they diverge in a single view:
+
+```
+set cartoon_transparency, 0.5, objA and chain A and resi 540-606
+set cartoon_transparency, 0.5, objB and chain A and resi 540-606
+```
+
+Keep whatever you are highlighting — sticks, spheres, ligands — **opaque**. Solid
+sticks against two ghosted cartoons stay perfectly crisp and give the eye
+something to anchor on.
+
+**2. Whole-chain context you want present but silent — push the transparency up
+first.**
+
+```
+set cartoon_transparency, 0.88, <backdrop selection>
+```
+
+Two whole protein chains at `0.88` sat behind a pair of highlighted domains
+without competing. Reach for the tube only if that is still too busy:
+
+```
+cartoon tube, <backdrop selection>
+set cartoon_tube_radius, 0.15
+```
+
+Whichever you use, **look at the result** rather than assuming — and if you are
+comparing the two, change only the representation and hold the transparency
+value fixed.
+
+**3. Something big and simply in the way — `hide` it.** If you would not miss it
+from the figure, transparency is the wrong tool and will only cost you render
+time.
+
+For any of these, turn off transparent shadows or the ghosted geometry casts
+solid ones:
+
+```
+set ray_transparency_shadows, 0
+set transparency_mode, 2
+```
 
 ## Fog hides the thing you zoomed in on
 
