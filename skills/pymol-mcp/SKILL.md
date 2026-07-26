@@ -716,6 +716,21 @@ to print while recolouring, then undoing its colours. It also reports gaps,
 which no command could previously reveal -- a nicked chain is still one chain,
 and the break shows up only in the numbering.
 
+**The `kind` field can be wrong. Do not branch on it.** On PDB entry `4faq`,
+which RCSB records as nucleic-acid-only, `get_chains` reports chain A as
+`kind: "protein"`. Counting settles it:
+
+```
+count 4faq and polymer.protein     # 0 atoms
+count 4faq and molecule=rna        # 8478 atoms
+```
+
+The atom and residue counts, the span and the gaps have all been reliable; it is
+the type label that misfired. If a decision depends on whether a chain is protein
+or nucleic, spend one `count` call confirming it rather than trusting the label —
+the failure is silent, and a `polymer.protein` selection that returns nothing
+looks exactly like a chain that is genuinely absent.
+
 Colour per chain explicitly once you know what is there:
 
 ```
