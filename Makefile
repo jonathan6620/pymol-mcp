@@ -27,7 +27,7 @@ endif
 FORCE ?=
 
 .PHONY: help install install-plugin install-pymolrc install-skill test \
-        test-integration lint typecheck validate
+        test-integration test-install lint typecheck validate
 
 help:
 	@echo "Targets:"
@@ -37,6 +37,7 @@ help:
 	@echo "  install-skill     Install the usage skill for Claude Code and Codex"
 	@echo "  test              Run the test suite"
 	@echo "  test-integration  Run tests against real PyMOL processes (slow)"
+	@echo "  test-install      Test the shell/ install scripts in a container (needs Docker)"
 	@echo "  lint              Run ruff"
 	@echo "  typecheck         Run Pyright"
 	@echo "  validate          Run lint, type checks, and tests"
@@ -44,6 +45,7 @@ help:
 	@echo "Variables:"
 	@echo "  PYMOL=<path>      PyMOL executable (auto-detected; a shell alias will not work)"
 	@echo "  FORCE=1           install-pymolrc: replace an unmanaged ~/.pymolrc.py"
+	@echo "  FULL=1            test-install: also test the conda path (slow, ~1 GB)"
 	@echo ""
 	@echo "Detected PYMOL: $(if $(PYMOL),$(PYMOL),<none - pass PYMOL=/path/to/pymol>)"
 
@@ -79,6 +81,13 @@ test:
 # Launches real PyMOL instances, so it is minutes not seconds.
 test-integration:
 	uv run pytest -m integration -v
+
+# Runs the shell/ install scripts in a throwaway container, which is the only
+# way to test them: they install uv, edit ~/.pymolrc.py and create conda
+# environments. Needs Docker. FULL=1 adds the conda and PyMOL path, which
+# pulls ~1 GB and fetches a structure from the PDB.
+test-install:
+	./shell/test-install.sh $(if $(FULL),--full,)
 
 lint:
 	uv run ruff check .

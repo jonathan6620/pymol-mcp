@@ -63,6 +63,32 @@ PyMOL, and it can be run on its own afterwards:
 pymol -cq scripts/install_plugin.py
 ```
 
+## Testing them
+
+```bash
+make test-install           # ~1 minute
+make test-install FULL=1    # adds the conda path: ~1 GB, several minutes
+```
+
+`test-install.sh` runs `install-linux.sh` inside a throwaway Ubuntu container,
+which is the only honest way to test it — the script installs uv, edits
+`~/.pymolrc.py`, and creates conda environments, none of which you want
+happening on the machine running the test. Needs Docker; nothing is installed
+locally.
+
+The fast suite covers the guards (missing `curl`, an unusable `--pymol`, an
+unknown flag), a bootstrap from a machine with nothing installed, and a rerun
+proving idempotency. `FULL=1` adds Miniforge, the `pymol-env` environment, the
+plugin install, and driving a headless PyMOL over the socket — it fetches 1UBQ
+and checks that ubiquitin's 76 CA atoms come back, so it exercises the whole
+path rather than just opening a port. It needs network access to the PDB.
+
+Most assertions are regression tests for bugs that only appeared when the
+scripts were run rather than read, and each is commented with what it guards.
+This is deliberately not part of CI or of `make validate`: it needs Docker and
+takes minutes. Run it after touching `shell/`, `scripts/install_*.py`, or
+`environment.yml`.
+
 ## Relationship to the Makefile
 
 `make install` does steps 4–6 and assumes uv, PyMOL, and the dependencies are
