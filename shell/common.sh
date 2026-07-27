@@ -366,6 +366,11 @@ install_skill() {
 
 # --- MCP clients ------------------------------------------------------------
 
+# Delegates to scripts/install_mcp.py so this and `make install-mcp` cannot
+# drift apart. They already had: only this path registered anything, and it
+# checked whether an entry *existed* rather than whether it was *correct* --
+# so a registration left naming the old flat pymol_mcp_server.py survived every
+# rerun of the installer, reported as "already registered".
 register_clients() {
   if [ "$SKIP_CLIENTS" = "1" ]; then
     step "Skipping MCP client registration (--skip-clients)"
@@ -373,43 +378,11 @@ register_clients() {
   fi
 
   step "Registering the MCP server with your clients"
-  local found=0
-
-  # `mcp get` exits non-zero when the name is unknown, in both CLIs. Do not
-  # switch this to `mcp list | grep -q`: grep closes the pipe on its first
-  # match, the CLI takes SIGPIPE, and pipefail then reports the whole pipeline
-  # as failed -- so an already-registered server looks missing.
-  if have claude; then
-    found=1
-    if claude mcp get pymol >/dev/null 2>&1; then
-      ok "Claude Code: 'pymol' is already registered."
-    elif claude mcp add pymol -s user -- uv --directory "$REPO_ROOT" run pymol-mcp; then
-      ok "Claude Code: registered 'pymol' (user scope)."
-    else
-      warn "Claude Code: 'claude mcp add' failed (already registered?)."
-      note "Check with:  claude mcp list"
-    fi
-  fi
-
-  if have codex; then
-    found=1
-    if codex mcp get pymol >/dev/null 2>&1; then
-      ok "Codex: 'pymol' is already registered."
-    elif codex mcp add pymol -- uv --directory "$REPO_ROOT" run pymol-mcp; then
-      ok "Codex: registered 'pymol'."
-    else
-      warn "Codex: 'codex mcp add' failed (already registered?)."
-      note "Check with:  codex mcp list"
-    fi
-  fi
-
-  if [ "$found" = "0" ]; then
-    warn "Neither the 'claude' nor the 'codex' CLI is on PATH."
-    note "No MCP client was configured. For Claude Code:
-      claude mcp add pymol -s user -- uv --directory \"$REPO_ROOT\" run pymol-mcp
-  For Codex:
-      codex mcp add pymol -- uv --directory \"$REPO_ROOT\" run pymol-mcp
-  For Claude Desktop, see the README (Step 3, Option A)."
+  if uv run python scripts/install_mcp.py; then
+    ok "MCP client registration reconciled."
+  else
+    warn "MCP client registration failed."
+    note "Check with:  claude mcp list   /   codex mcp list"
   fi
 }
 

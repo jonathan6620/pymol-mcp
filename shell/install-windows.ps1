@@ -299,6 +299,11 @@ function Install-Skill {
 
 # --- MCP clients ------------------------------------------------------------
 
+# Delegates to scripts/install_mcp.py so this, shell/common.sh and
+# `make install-mcp` cannot drift apart. They already had: only the installers
+# registered anything, and they checked whether an entry *existed* rather than
+# whether it was *correct* -- so a registration left naming the old flat
+# pymol_mcp_server.py survived every rerun, reported as "already registered".
 function Register-Clients {
     if ($SkipClients) {
         Write-Step 'Skipping MCP client registration (-SkipClients)'
@@ -306,49 +311,13 @@ function Register-Clients {
     }
 
     Write-Step 'Registering the MCP server with your clients'
-    $found = $false
-
-    # `mcp get` exits non-zero when the name is unknown, in both CLIs, which is
-    # steadier than parsing the human-readable `mcp list` table.
-    if (Test-Command 'claude') {
-        $found = $true
-        & claude mcp get pymol 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Ok "Claude Code: 'pymol' is already registered."
-        } else {
-            & claude mcp add pymol -s user -- uv --directory $RepoRoot run pymol-mcp
-            if ($LASTEXITCODE -eq 0) {
-                Write-Ok "Claude Code: registered 'pymol' (user scope)."
-            } else {
-                Write-Warn "Claude Code: 'claude mcp add' failed (already registered?)."
-                Add-Note 'Check with:  claude mcp list'
-            }
-        }
-    }
-
-    if (Test-Command 'codex') {
-        $found = $true
-        & codex mcp get pymol 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Ok "Codex: 'pymol' is already registered."
-        } else {
-            & codex mcp add pymol -- uv --directory $RepoRoot run pymol-mcp
-            if ($LASTEXITCODE -eq 0) {
-                Write-Ok "Codex: registered 'pymol'."
-            } else {
-                Write-Warn "Codex: 'codex mcp add' failed (already registered?)."
-                Add-Note 'Check with:  codex mcp list'
-            }
-        }
-    }
-
-    if (-not $found) {
-        Write-Warn "Neither the 'claude' nor the 'codex' CLI is on PATH."
+    & uv run python scripts\install_mcp.py
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok 'MCP client registration reconciled.'
+    } else {
+        Write-Warn 'MCP client registration failed.'
         Add-Note @"
-No MCP client was configured. For Claude Code:
-      claude mcp add pymol -s user -- uv --directory "$RepoRoot" run pymol-mcp
-  For Codex:
-      codex mcp add pymol -- uv --directory "$RepoRoot" run pymol-mcp
+Check with:  claude mcp list   /   codex mcp list
   For Claude Desktop, see the README (Step 3, Option A). Use forward slashes in
   the JSON config.
 "@

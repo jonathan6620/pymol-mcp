@@ -165,6 +165,64 @@ check "uv is not reinstalled on the second run" \
 check "~/.pymolrc.py is left alone"  grep -q "Already up to date" /tmp/run2.log
 check "the skill links are left alone" grep -q "Already linked" /tmp/run2.log
 
+# The installer used to check whether a client entry *existed* and stop there,
+# so a registration naming the pre-restructure pymol_mcp_server.py survived
+# every rerun, reported as "already registered". Nothing here covered client
+# registration at all, which is how that shipped. A stub CLI on PATH gives the
+# reconcile path something to talk to without needing the real clients.
+section "a stale client registration is repaired"
+
+mkdir -p /tmp/stubbin
+cat >/tmp/stubbin/claude <<'STUB'
+#!/bin/sh
+# Records its argv, and answers `mcp get` with the old, wrong command.
+echo "$@" >>/tmp/claude-calls.log
+case "$1 $2" in
+  "mcp get")
+    echo "pymol:"
+    echo "  Type: stdio"
+    echo "  Command: uv"
+    echo "  Args: --directory /work run --quiet pymol_mcp_server.py"
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x /tmp/stubbin/claude
+: >/tmp/claude-calls.log
+
+PATH=/tmp/stubbin:$PATH ./shell/install-linux.sh --skip-pymol >/tmp/run4.log 2>&1
+check "run with a stub client exits 0" test "$?" -eq 0
+check "the stale entry is detected, not accepted" \
+  grep -q "replaced a stale registration" /tmp/run4.log
+check "the old command is named in the output" \
+  grep -q "pymol_mcp_server.py" /tmp/run4.log
+check "the stale entry is removed before being re-added" \
+  grep -q "^mcp remove pymol" /tmp/claude-calls.log
+check "the corrected command is registered" \
+  grep -q "^mcp add pymol -s user -- uv --directory /work run pymol-mcp$" \
+    /tmp/claude-calls.log
+
+# Same stub, but already correct: reconciling must not rewrite it.
+cat >/tmp/stubbin/claude <<'STUB'
+#!/bin/sh
+echo "$@" >>/tmp/claude-calls2.log
+case "$1 $2" in
+  "mcp get")
+    echo "pymol:"
+    echo "  Command: uv"
+    echo "  Args: --directory /work run pymol-mcp"
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+: >/tmp/claude-calls2.log
+
+PATH=/tmp/stubbin:$PATH ./shell/install-linux.sh --skip-pymol >/tmp/run5.log 2>&1
+check "a correct registration is reported as such" \
+  grep -q "already registered correctly" /tmp/run5.log
+check "a correct registration is not rewritten" \
+  sh -c '! grep -q "mcp add" /tmp/claude-calls2.log'
+
 if [ "${RUN_FULL:-0}" = "1" ]; then
   section "conda path: Miniforge, pymol-env, plugin, headless listener"
 
