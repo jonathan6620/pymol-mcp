@@ -114,7 +114,7 @@ class TestInstallMcp:
     CODEX_JSON = """
     {"name": "pymol", "enabled": true,
      "transport": {"type": "stdio", "command": "uv",
-                   "args": ["--directory", "/repo", "run", "pymol-mcp"]}}
+                   "args": ["--directory", "/repo", "run", "--frozen", "pymol-mcp"]}}
     """
 
     # Real `claude mcp get` output, trimmed. No --json exists on this one.
@@ -123,7 +123,7 @@ class TestInstallMcp:
   Status: OK Connected
   Type: stdio
   Command: uv
-  Args: --directory /repo run pymol-mcp
+  Args: --directory /repo run --frozen pymol-mcp
 """
 
     @pytest.fixture
@@ -165,6 +165,7 @@ class TestInstallMcp:
             "--directory",
             "/repo",
             "run",
+            "--frozen",
             "pymol-mcp",
         ]
 
@@ -174,13 +175,13 @@ class TestInstallMcp:
     def test_parses_the_claude_text_format(self, mod):
         assert mod.parse_claude(self.CLAUDE_TEXT) == (
             "uv",
-            "--directory /repo run pymol-mcp",
+            "--directory /repo run --frozen pymol-mcp",
         )
 
     def test_parses_the_codex_transport_block(self, mod):
         assert mod.parse_codex(self.CODEX_JSON) == (
             "uv",
-            "--directory /repo run pymol-mcp",
+            "--directory /repo run --frozen pymol-mcp",
         )
 
     def test_codex_top_level_command_still_parses(self, mod):
@@ -204,12 +205,23 @@ class TestInstallMcp:
         """The exact regression: a registration naming the pre-restructure
         command must be detected, not accepted."""
         stale = self.CODEX_JSON.replace(
-            '"run", "pymol-mcp"', '"run", "--quiet", "pymol_mcp_server.py"'
+            '"run", "--frozen", "pymol-mcp"', '"run", "--quiet", "pymol_mcp_server.py"'
         )
         calls.replies[("codex", "mcp", "get")] = (0, stale)
         state, found = self.client(mod, "codex").state("/repo")
         assert state == mod.STALE
         assert "pymol_mcp_server.py" in found
+
+    def test_a_registration_without_frozen_is_stale(self, mod, calls):
+        """The lock-churn regression: the client spawns this command with its
+        own environment, so the Makefile's UV_FROZEN export never reaches it.
+        A registration predating --frozen rewrites uv.lock on every start and
+        must be replaced, not accepted."""
+        stale = self.CODEX_JSON.replace('"run", "--frozen"', '"run"')
+        calls.replies[("codex", "mcp", "get")] = (0, stale)
+        state, found = self.client(mod, "codex").state("/repo")
+        assert state == mod.STALE
+        assert "--frozen" not in found
 
     def test_a_moved_checkout_is_stale(self, mod, calls):
         """The other way the recorded --directory goes stale."""

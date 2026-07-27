@@ -52,14 +52,14 @@ cd pymol-mcp
 conda env create -f environment.yml     # installs PyMOL; skip if you have it
 conda activate pymol-env
 uv sync
-claude mcp add pymol -s user -- uv --directory $(pwd) run pymol-mcp
+claude mcp add pymol -s user -- uv --directory $(pwd) run --frozen pymol-mcp
 make install
 ```
 
 For OpenAI Codex, replace the `claude mcp add` command with:
 
 ```bash
-codex mcp add pymol -- uv --directory "$(pwd)" run pymol-mcp
+codex mcp add pymol -- uv --directory "$(pwd)" run --frozen pymol-mcp
 ```
 
 Restart PyMOL and start a new Claude Code session. On startup PyMOL prints
@@ -176,14 +176,14 @@ For example:
 From the cloned repository directory, add the PyMOL MCP server using the `claude` CLI:
 
 ```bash
-claude mcp add pymol -s user -- uv --directory $(pwd) run pymol-mcp
+claude mcp add pymol -s user -- uv --directory $(pwd) run --frozen pymol-mcp
 ```
 
 `$(pwd)` expands to the repo you're standing in, so run this from the `pymol-mcp`
 directory you cloned in Step 2. From anywhere else, pass the full path instead:
 
 ```bash
-claude mcp add pymol -s user -- uv --directory /path/to/pymol-mcp run pymol-mcp
+claude mcp add pymol -s user -- uv --directory /path/to/pymol-mcp run --frozen pymol-mcp
 ```
 
 This saves the configuration to `~/.claude.json`. You can verify it was added with:
@@ -199,7 +199,7 @@ claude mcp list
 From the cloned repository directory, register the local stdio MCP server:
 
 ```bash
-codex mcp add pymol -- uv --directory "$(pwd)" run pymol-mcp
+codex mcp add pymol -- uv --directory "$(pwd)" run --frozen pymol-mcp
 ```
 
 Verify the configuration with `codex mcp list`. Codex stores MCP configuration

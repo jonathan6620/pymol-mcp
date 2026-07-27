@@ -199,7 +199,7 @@ check "the old command is named in the output" \
 check "the stale entry is removed before being re-added" \
   grep -q "^mcp remove pymol" /tmp/claude-calls.log
 check "the corrected command is registered" \
-  grep -q "^mcp add pymol -s user -- uv --directory /work run pymol-mcp$" \
+  grep -q "^mcp add pymol -s user -- uv --directory /work run --frozen pymol-mcp$" \
     /tmp/claude-calls.log
 
 # Same stub, but already correct: reconciling must not rewrite it.
@@ -210,7 +210,7 @@ case "$1 $2" in
   "mcp get")
     echo "pymol:"
     echo "  Command: uv"
-    echo "  Args: --directory /work run pymol-mcp"
+    echo "  Args: --directory /work run --frozen pymol-mcp"
     exit 0 ;;
   *) exit 0 ;;
 esac

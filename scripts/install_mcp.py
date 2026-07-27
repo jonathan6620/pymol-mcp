@@ -42,8 +42,15 @@ def expected_argv(root):
     `uv --directory` rather than a venv python: it resolves the entry point
     through the project's own environment, so the registration keeps working
     after a dependency change without pointing into .venv internals.
+
+    `--frozen` for the same reason the Makefile exports UV_FROZEN: a uv older
+    than the one that wrote uv.lock rewrites the file in place. The Makefile's
+    export does not reach here -- the client (Claude Code, Codex) spawns this
+    command itself, with its own environment -- so the flag has to be baked
+    into the registration. Without it the lock churns on every client start,
+    which is how it kept coming back after the Makefile was fixed.
     """
-    return ["uv", "--directory", root, "run", "pymol-mcp"]
+    return ["uv", "--directory", root, "run", "--frozen", "pymol-mcp"]
 
 
 def run(argv):
@@ -64,7 +71,7 @@ def parse_claude(text):
 
         Type: stdio
         Command: uv
-        Args: --directory /path/to/repo run pymol-mcp
+        Args: --directory /path/to/repo run --frozen pymol-mcp
 
     Args is returned as the single joined string it is printed as, and compared
     that way. Splitting it would be guesswork on any path containing a space --
