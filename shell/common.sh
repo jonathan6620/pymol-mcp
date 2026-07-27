@@ -14,6 +14,12 @@
 
 set -euo pipefail
 
+# An older uv than the one that wrote the committed uv.lock rewrites the file
+# in place, downgrading its format and leaving an ~800-line diff in the user's
+# checkout as a side effect of installing. Set once here rather than per call,
+# so every `uv sync` and `uv run` below is covered, including future ones.
+export UV_FROZEN=1
+
 CONDA_ENV_NAME=pymol-env
 
 # Defaults; the OS scripts overwrite these from their flag parsing.

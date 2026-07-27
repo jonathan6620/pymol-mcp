@@ -304,6 +304,14 @@ class TestMakefileWiringMatchesTheInstallers:
             text = (REPO_ROOT / path).read_text()
             assert "install_mcp.py" in text, f"{path} must call the shared script"
 
+    def test_every_entry_point_pins_uv_frozen(self):
+        """Without this, an installer whose uv is older than the one that wrote
+        uv.lock rewrites the lock in place, so running the installer leaves an
+        ~800-line diff in the user's checkout."""
+        for path in ("Makefile", "shell/common.sh", "shell/install-windows.ps1"):
+            text = (REPO_ROOT / path).read_text()
+            assert "UV_FROZEN" in text, f"{path} must pin UV_FROZEN"
+
     def test_the_installers_do_not_call_mcp_add_directly(self):
         """A direct `mcp add` here is the presence-only check growing back."""
         for path in ("shell/common.sh", "shell/install-windows.ps1"):

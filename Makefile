@@ -24,6 +24,17 @@ PYMOL := $(shell \
 	done)
 endif
 
+# uv rewrites uv.lock whenever the uv doing the rewriting is older than the one
+# that wrote the committed lock -- it downgrades the file format in place and
+# produces an ~800-line diff nobody asked for, which then rides along in the
+# next commit. `export` covers every recipe below, and any `uv` call added
+# later, which sprinkling --frozen on each call site would not.
+#
+# The trade-off: --frozen also means a dependency added to pyproject.toml is
+# not picked up until someone reruns `uv lock` deliberately. That is the right
+# default for install and test targets, which should build what is committed.
+export UV_FROZEN := 1
+
 FORCE ?=
 
 .PHONY: help install install-plugin install-pymolrc install-skill install-mcp \
