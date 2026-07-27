@@ -23,6 +23,26 @@ and analysis through natural language.
 
 ## Quick Start
 
+One script does the whole setup, installing uv, PyMOL, the plugin, the skill,
+and the MCP client registration — whichever of those is missing:
+
+```bash
+git clone https://github.com/jonathan6620/pymol-mcp
+cd pymol-mcp
+./shell/install-macos.sh        # or ./shell/install-linux.sh
+```
+
+On Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File shell\install-windows.ps1
+```
+
+It is safe to re-run, and `shell/README.md` documents the flags — `--skip-pymol`
+if you already have PyMOL, `--skip-clients` to leave your MCP config alone.
+
+### Quick Start by hand
+
 For Claude Code, with [uv](#step-1-install-the-uv-package-manager), *conda* and
 *Make* installed:
 
@@ -372,6 +392,8 @@ src/pymol_mcp/         MCP server and models; entry point `pymol-mcp`
 pymol-mcp-socket-plugin/   PyMOL plugin (the directory name is the module
                            name PyMOL imports, so it cannot change)
 scripts/               install_plugin, install_pymolrc, install_skill
+shell/                 per-OS setup scripts that drive the above from a
+                       freshly cloned repo
 skills/pymol-mcp/      Claude Code skill
 tests/                 pytest suite; conftest.py stubs the MCP framework
 environment.yml        conda env for PyMOL; this repo's own deps are in
