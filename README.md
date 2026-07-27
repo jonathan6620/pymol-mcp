@@ -275,6 +275,13 @@ With the socket listener running (Step 5):
   click it to access the PyMOL tools.
 - **Claude Code (CLI):** start a new session in the terminal.
 
+The MCP server also exposes `launch_pymol`, which opens a GUI, retains the
+process handle, and waits until the new socket listener is discoverable. Clients
+must obtain user approval before calling it because it opens a desktop window.
+This is the preferred launch route in managed command environments; avoid
+starting `pymol -q &` from a disposable shell, which may reap the background
+process as soon as the shell exits.
+
 ### Example Commands
 
 Here are some examples of what you can ask Claude to do:
