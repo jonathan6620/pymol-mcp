@@ -8,8 +8,7 @@ unrecoverable and invisible.
   2. Every diagnostic on that path went through _log, which is off by default,
      so nothing reached the client, the console, or history.jsonl.
   3. A separate `listening` flag was never reset, so start_socket_server()
-     returned False without doing anything and the dialog showed green while
-     nothing was bound.
+     returned False without doing anything while nothing was bound.
 """
 
 import json
@@ -64,8 +63,8 @@ class TestListeningIsDerivedNotTracked:
         assert plugin.is_listening() is False
 
     def test_reports_false_once_the_thread_has_died(self, plugin):
-        """The bug: a tracked flag stayed True, so the dialog showed green
-        and restart refused, while nothing was bound."""
+        """The bug: a tracked flag stayed True and restart refused while
+        nothing was bound."""
         plugin.start_socket_server(free_port())
         kill_listener(plugin.socket_server)
         assert plugin.is_listening() is False

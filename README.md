@@ -346,10 +346,6 @@ to disable. The variable is read from the environment PyMOL was launched from.
 - **Command errors**: Check the PyMOL output window for any error messages
 - **`MCP socket plugin not installed`** on PyMOL startup, run
   `pymol -cq scripts/install_plugin.py`
-- **Dialog says "Not listening" while the port is in use**: your `~/.pymolrc.py`
-  loads the plugin by file path, giving the dialog and the listener separate
-  copies of the module. Use the snippet in
-  [Step 5](#step-5-start-the-pymol-socket-listener).
 - **`~/.pymolrc.py` is ignored**: PyMOL searches the working directory before
   `$HOME` and stops at the first directory holding a `pymolrc*` or `.pymolrc*`
   file, so launching from such a directory shadows your home config. To print
@@ -359,7 +355,6 @@ to disable. The variable is read from the environment PyMOL was launched from.
   pymol -cq -d "import pymol.invocation as i; print(i.get_user_config())"
   ```
 
-- **Plugin not appearing**: Restart PyMOL and check that the plugin was correctly installed
 - **Claude not connecting**: Verify the paths in your Claude configuration file are correct
 - **Garbled client display**: PyMOL writes to the terminal it was launched from,
   which corrupts the display of a terminal client such as Claude Code. Launch
@@ -377,15 +372,9 @@ can drive PyMOL through it.
 plugin parses those first and allows only arithmetic over atom properties,
 rejecting attribute access, subscripting, lambdas and comprehensions.
 
-## Limitations & Notes
-
-- The socket connection requires both PyMOL and Claude to be running on the same machine
-- Some complex operations may need to be broken down into simpler steps
-- Always save your work before using experimental features
-
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome. Please feel free to submit a Pull Request.
 
 ```
 src/pymol_mcp/         MCP server and models; entry point `pymol-mcp`
@@ -416,12 +405,11 @@ make lint
 
 ## Credits
 
-Derived from [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp) by
-[Vishnu Rajan Tejus](https://github.com/vrtejus).
+This project is derived from [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp).
 
-- Replaced `exec()` with an allowlisted command dispatcher
-- Added Pydantic models, type hints, and a test suite
-- Reworked setup around uv and added Claude Code CLI instructions
+This repo is maintained by [Jonathan Ward](https://github.com/jonathan6620).
+New features include an allowlisted command dispatcher, typed API, test suite,
+multi-instance support, installation tooling, and usage skill.
 
 ## License
 
