@@ -33,20 +33,51 @@ sys.modules["mcp"].types = _real_mcp_types
 
 
 def free_ports(count=1):
-    """Ask the OS for unused ports, then release them.
+    """A *contiguous* block of unused ports.
 
     Tests must not use the real 9876-9895 range: a developer with PyMOL open
     would have their live instance discovered by the test suite.
+
+    Contiguity is the load-bearing part. Callers hand this to PORT_RANGE as
+    `range(min(ports), max(ports) + 1)`, and three ports picked independently
+    from the ephemeral range are nowhere near each other -- 44800 and 52460
+    made a 7,661-port scan. Discovery then swept up listeners belonging to
+    other tests, so a test that started no instance found two and failed, and
+    one asserting an exact port list found extras. It presented as flakiness
+    because which ports the OS handed out varied per run.
+
+    Asking for one port and probing the rest of the block also double-checks
+    that nothing already holds them, which the previous bind-then-close could
+    not do for ports it never touched.
     """
-    socks = []
-    for _ in range(count):
-        s = socket.socket()
-        s.bind(("localhost", 0))
-        socks.append(s)
-    ports = [s.getsockname()[1] for s in socks]
-    for s in socks:
-        s.close()
-    return ports
+    if count < 1:
+        raise ValueError("count must be at least 1")
+
+    for _ in range(100):
+        probe = socket.socket()
+        probe.bind(("localhost", 0))
+        first = probe.getsockname()[1]
+        probe.close()
+
+        if first + count - 1 > 65535:
+            continue
+
+        socks = []
+        try:
+            for offset in range(count):
+                s = socket.socket()
+                s.bind(("localhost", first + offset))
+                socks.append(s)
+        except OSError:
+            continue  # something holds a port in the block; pick another
+        finally:
+            for s in socks:
+                s.close()
+
+        if len(socks) == count:
+            return list(range(first, first + count))
+
+    raise RuntimeError(f"could not find {count} contiguous free ports")
 
 
 def free_port():

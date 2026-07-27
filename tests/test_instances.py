@@ -45,6 +45,34 @@ def running(scan_range):
         plugin.stop_socket_server()
 
 
+class TestTestPorts:
+    """The fixture ports themselves, which were the source of a flaky suite."""
+
+    def test_the_block_is_contiguous(self):
+        """scan_range spans min..max, so a gap here is a scan over unrelated
+        ports -- and it picks up listeners the test does not own."""
+        got = free_ports(4)
+        assert got == list(range(got[0], got[0] + 4))
+
+    def test_the_scanned_range_is_only_the_test_ports(self, scan_range):
+        assert len(server.PORT_RANGE) == len(scan_range)
+        assert list(server.PORT_RANGE) == scan_range
+
+    def test_the_block_avoids_the_real_pymol_range(self):
+        """A developer's own PyMOL must never be discovered by the suite."""
+        got = free_ports(3)
+        assert not set(got) & set(range(9876, 9896))
+
+    def test_port_range_stays_a_range(self, scan_range):
+        """Narrowing the scan by assigning a *list* of the exact ports is the
+        obvious-looking fix, and it breaks the no-instances error message,
+        which formats PORT_RANGE.start and .stop. Allocating a contiguous
+        block keeps the scan tight without giving up the range."""
+        assert isinstance(server.PORT_RANGE, range)
+        assert server.PORT_RANGE.start == scan_range[0]
+        assert server.PORT_RANGE.stop - 1 == scan_range[-1]
+
+
 class TestPortAllocation:
     def test_each_instance_claims_a_different_port(self, ports, monkeypatch):
         """A second PyMOL must get its own listener, not silently go without."""
