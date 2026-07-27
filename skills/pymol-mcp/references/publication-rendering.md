@@ -136,3 +136,9 @@ Use the same viewport aspect ratio for the build and verification render.
 Changing a 6:5 scene to 5:4 after reopening can make a correct saved camera look
 different. File size is only a diagnostic; it does not prove that coordinates
 or representations survived.
+
+Setting the viewport freely is safe here because a `pymol -cq` build has no
+window. Driving a live session through the MCP server is different: `viewport`
+resizes the user's actual window, and so does an un-raytraced `png` at
+non-matching dimensions. See "Set the viewport once" in SKILL.md before
+rendering repeated proofs into a window someone is watching.

@@ -154,6 +154,29 @@ number. If the user says "the ubiquitin one", match it against the object names.
 failing to bind. But it is still a real window on someone's desktop, so ask, and
 check `list_instances` first in case the one they want already exists.
 
+### Never kill a PID you have not matched against `list_instances`
+
+Killing "the instance I just launched" from a `ps` listing is how you close the
+window the user is working in. A launch that produced no listener leaves a
+process that looks exactly like a healthy one in `ps`, and a user who restarted
+PyMOL themselves — between two of your calls, invisibly — leaves a *live*
+instance whose process age looks freshly started. Both were true at once in one
+session, and the wrong process was killed.
+
+`ps` cannot distinguish them; the port can. Before any `kill`:
+
+```
+list_instances          # gives instance=<port>, pid <n> for every live PyMOL
+```
+
+Kill only a PID that `list_instances` does **not** list, and say which port each
+surviving instance holds. If the PID you meant to kill turns out to hold a port,
+it is serving somebody — including possibly you, two calls ago.
+
+The cheaper move is usually not to kill anything. A stalled launch with no
+listener is harmless: it holds no port, so the next launch still works, and the
+user can close the stray window themselves.
+
 ## The server is not a natural-language interface
 
 `mcp__pymol__parse_and_execute` matches input against a fixed table of command
@@ -274,6 +297,54 @@ zoom visible
 
 Then render, inspect the image, and only proceed to the expensive publication
 render after the proof has the intended composition.
+
+### Set the viewport once — it resizes the user's window
+
+`viewport` is not a render parameter, it resizes the actual PyMOL window on the
+desktop. So does an **un-raytraced** `png` at dimensions that do not match the
+current viewport: PyMOL resizes the window to grab the framebuffer at the
+requested size. Neither announces itself, and from the tool side both look like
+ordinary render bookkeeping.
+
+Issued once at the start this is invisible. Issued before every proof render —
+which is easy to fall into when chasing a visual bug — the window jumps on every
+call, and a user chasing a GUI problem is now also chasing a moving target. In
+one session this produced a run of complaints (a stale drawing area, a white
+band across the window, widget text that had apparently shrunk) that were
+downstream of the resizing, not of anything molecular. The camera also appeared
+to drift between renders, which was misread as the user rotating in the GUI.
+
+The policy that keeps the window still:
+
+- **`viewport` once per session**, at the start, and never again.
+- **Un-raytraced proofs render at exactly the viewport dimensions.** Matching
+  means no resize.
+- **Any other size uses `ray=true`.** The ray-tracer renders offscreen at
+  arbitrary dimensions and never touches the window, so a 3200 px publication
+  render costs no resize at all.
+
+Pin it across sessions by appending to `~/.pymolrc.py`, **after** the managed
+`# >>> pymol-mcp auto-start >>>` block — the installer overwrites anything
+inside it:
+
+```python
+from pymol import cmd
+cmd.viewport(1200, 900)
+```
+
+### GUI text size is not adjustable
+
+If widget text looks too small, the reachable setting is `display_scale_factor`,
+and it will not fix it. It scales the internal GUI's *control geometry* but not
+the object panel's glyphs, which are a fixed bitmap font — so
+`display_scale_factor 2` yields big icons around text that is exactly as small
+as before, which reads as worse than leaving it alone. There is no
+`internal_gui_font_size`; the name is rejected as an unknown setting.
+
+`internal_gui_control_size` (default 18) and `internal_gui_width` (default 220)
+are real and do what they say, so offer them for panel rows and truncated object
+names. For the text itself, say plainly that PyMOL does not expose it rather
+than cycling through settings on the user's window.
 
 **Delete named selections before rendering.** A `select` leaves magenta
 indicator dots on every selected atom, and they show up in the ray-traced image
@@ -486,8 +557,49 @@ solid ones:
 
 ```
 set ray_transparency_shadows, 0
-set transparency_mode, 2
 ```
+
+### `transparency_mode 2` deletes what is behind the transparent thing
+
+That line used to read `set transparency_mode, 2` here, paired with the shadow
+setting above as though the two went together. They do not, and mode 2 has a
+failure that looks exactly like the transparency never being applied.
+
+Mode 2's **real-time** path does not depth-sort correctly, so geometry *behind*
+a transparent cartoon is dropped rather than blended. The ray-traced render of
+the identical scene is correct. On a protein/DNA complex at
+`cartoon_transparency 0.6`, a DNA strand crossing the protein vanished in the
+GUI across the whole crossing and reappeared on either side, while the ray
+render showed it running through continuously.
+
+This is the single most convincing way to be told transparency is broken when
+it is not, so establish which it is before touching the setting:
+
+```
+inspect_setting cartoon_transparency, <the transparent selection>
+```
+
+`overridden: true` with a uniform value on the expected atom count means the
+setting is applied and you are looking at a *rendering* problem, not a settings
+problem. Then render the same camera twice, `ray=false` and `ray=true`. If the
+occluded geometry appears only in the ray render, it is this.
+
+The fix for the interactive view is the shader-based path:
+
+```
+set transparency_mode, 3
+```
+
+**Do not reach for `use_shaders 1` alongside it.** Doing so on a Linux/GL box
+corrupted the internal GUI — distorted icons in the right-hand panel and a white
+band across the drawing area. `transparency_mode 3` with `use_shaders 0` kept
+the transparency fix and dropped the corruption. `use_shaders` is global, so
+turning it on for one figure changes every scene afterwards.
+
+This is also a genuine mechanism for "it worked on my other machine": the
+real-time path depends on the GPU and driver, so an identical session with an
+identical setting legitimately renders differently on a Mac and on Linux. The
+setting is not what differs. Check `inspect_setting` before believing otherwise.
 
 ## Fog hides the thing you zoomed in on
 
@@ -823,7 +935,7 @@ cartoon tube, polymer.protein
 set cartoon_tube_radius, 0.3
 set cartoon_transparency, 0.4, polymer.protein
 set ray_transparency_shadows, 0
-set transparency_mode, 2
+set transparency_mode, 3                       # not 2; see the note above
 set depth_cue, 0
 set ray_trace_fog, 0
 png <scratchpad>/check.png, width=1000, height=800, dpi=150, ray=1
