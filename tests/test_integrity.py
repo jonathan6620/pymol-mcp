@@ -240,6 +240,48 @@ class TestServerModuleIntegrity:
         for field in ("path", "width", "height", "dpi", "ray"):
             assert field in result.stdout, f"{field} missing from output schema"
 
+    @pytest.mark.parametrize(
+        "tool,fields",
+        [
+            ("inspect_setting", ("global_value", "values", "overridden")),
+            ("unset_setting", ("global_value", "overridden")),
+            ("get_history", ("entries", "directory", "script")),
+            ("get_representations", ("groups", "hidden", "reps")),
+            ("save_file", ("path", "bytes", "object_count", "objects_verified")),
+        ],
+    )
+    def test_new_typed_tools_declare_an_output_schema(self, tool, fields):
+        """Every schema-bearing tool has to publish its schema.
+
+        This is the only place decorator behaviour is visible: conftest stubs
+        FastMCP in-process, so @mcp.tool() is a MagicMock everywhere else and a
+        tool whose annotation failed to produce a schema would look fine. That
+        is exactly how the render_png structured-output bug survived a passing
+        suite.
+        """
+        import subprocess
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "import json; from pymol_mcp.server import mcp; "
+                f"t = mcp._tool_manager.get_tool({tool!r}); "
+                "s = t.fn_metadata.output_schema; "
+                "print('schema=' + json.dumps(s))"
+            ],
+            capture_output=True, text=True,
+            cwd=str(REPO_ROOT),
+        )
+        assert result.returncode == 0, (
+            f"Failed to inspect {tool}:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "schema=null" not in result.stdout, (
+            f"{tool} publishes no output schema, so its result reaches the "
+            "caller as text to be re-parsed."
+        )
+        for field in fields:
+            assert field in result.stdout, f"{field} missing from {tool}'s schema"
+
     def test_render_png_returns_image_block_and_structured_metadata(self):
         """Both MCP channels must be used: bytes as content, facts as structured.
 

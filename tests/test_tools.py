@@ -366,3 +366,106 @@ def test_select_returns_typed_counts(monkeypatch):
     assert [c for c, _ in conn.sent] == ["select", "count"]
     assert counts.atoms == 104
     assert counts.residues == 5
+
+
+##############################################################################
+# scoped settings
+##############################################################################
+
+
+class _SettingConnection(_RecordingConnection):
+    """Answers inspect_setting so _unset_setting can report an after-state."""
+
+    def send_command(self, command, args, source=None, timeout=None):
+        self.sent.append((command, args))
+        if command == "inspect_setting":
+            return {
+                "status": "success",
+                "result": {
+                    "executed": True,
+                    "data": {
+                        "name": args["name"],
+                        "selection": args["selection"],
+                        "atoms": 12,
+                        "display": "0.60000",
+                        "global_value": 0.6,
+                        "object_values": [],
+                        "values": [{"value": 0.6, "atoms": 12, "objects": ["bac"]}],
+                        "uniform": True,
+                        "overridden": False,
+                        "truncated": False,
+                    },
+                },
+            }
+        return {"status": "success", "result": {"executed": True, "output": "ok"}}
+
+
+def _setting_conn(monkeypatch):
+    conn = _SettingConnection()
+    monkeypatch.setattr(server, "get_pymol_connection", lambda instance=None: conn)
+    return conn
+
+
+def test_unset_setting_parenthesises_a_single_field_selector(monkeypatch):
+    """The regression guard for the whole extension.
+
+    Selector.to_selection() returns a lone clause unwrapped, so
+    Selector(object="bac") renders as the bare word `bac` -- and a bare
+    identifier addresses the *object* layer, where a scoped `set` wrote the
+    *atom* layer. Passing it through untouched would clear nothing and report
+    success. The scope has to be applied on the way out.
+    """
+    from pymol_mcp.api import Selector
+
+    conn = _setting_conn(monkeypatch)
+    server._unset_setting(None, "cartoon_transparency", Selector(object="bac"))
+
+    command, args = conn.sent[0]
+    assert command == "unset"
+    assert args["scope"] == "atom"
+    # Rendered bare here; the plugin wraps it because the scope says to.
+    assert args["selection"] == "bac"
+
+
+def test_unset_setting_sends_the_scope_explicitly(monkeypatch):
+    from pymol_mcp.api import Selector
+
+    conn = _setting_conn(monkeypatch)
+    server._unset_setting(
+        None, "cartoon_transparency", Selector(object="bac"), scope="object"
+    )
+    assert conn.sent[0][1]["scope"] == "object"
+
+
+def test_unset_setting_global_scope_needs_no_selection(monkeypatch):
+    conn = _setting_conn(monkeypatch)
+    server._unset_setting(None, "cartoon_transparency", scope="global")
+    command, args = conn.sent[0]
+    assert command == "unset"
+    assert "selection" not in args
+
+
+def test_unset_setting_without_a_selection_is_refused(monkeypatch):
+    _setting_conn(monkeypatch)
+    with pytest.raises(ValueError, match="needs a selection"):
+        server._unset_setting(None, "cartoon_transparency")
+
+
+def test_unset_setting_rejects_a_bad_name_before_sending(monkeypatch):
+    conn = _setting_conn(monkeypatch)
+    with pytest.raises(ValueError, match="letters, numbers"):
+        server._unset_setting(None, "ambient\nrun evil.pml", scope="global")
+    assert conn.sent == []
+
+
+def test_unset_setting_reports_the_state_after_clearing(monkeypatch):
+    """Clearing and proving the clear in one call, like select returning Counts."""
+    from pymol_mcp.api import Selector
+
+    conn = _setting_conn(monkeypatch)
+    report = server._unset_setting(
+        None, "cartoon_transparency", Selector(object="bac")
+    )
+    assert [c for c, _ in conn.sent] == ["unset", "inspect_setting"]
+    assert report.overridden is False
+    assert report.global_value == 0.6

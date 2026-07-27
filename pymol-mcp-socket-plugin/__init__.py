@@ -71,13 +71,74 @@ HISTORY_OFF = ("off", "0", "false", "no")
 FILE_ARGS = {
     "load": ("filename", "in"),
     "save": ("filename", "out"),
+    "save_file": ("filename", "out"),
     "png": ("filename", "out"),
 }
+
+# Commands kept out of the history. Reading the history is not part of the
+# session being recorded, and recording it would mean every poll pushes the
+# commands the caller is looking for further out of reach.
+HISTORY_EXCLUDED = frozenset({"get_history"})
+
+# Bit index per representation, mirroring pymol.viewing.repres. The `reps`
+# field in a cmd.iterate namespace is this bitmask.
+#
+# Copied rather than imported so the handler stays testable without PyMOL.
+# TestRepresentationBits in the integration suite asserts this still equals
+# viewing.repres, which is the only thing standing between it and rot.
+#
+# Split by whether the bit can appear per atom, established by showing each
+# representation alone on a fragment and reading the mask back. The object
+# level ones always read 0 there, so they have to be reported as unknowable
+# rather than as absent. `everything` (-1) is a composite and excluded, as are
+# the composites in viewing.repmasks (licorice 17, wire 2176).
+ATOM_LEVEL_REPS = {
+    "sticks": 0,
+    "spheres": 1,
+    "surface": 2,
+    "labels": 3,
+    "nb_spheres": 4,
+    "cartoon": 5,
+    "ribbon": 6,
+    "lines": 7,
+    "mesh": 8,
+    "dots": 9,
+    "nonbonded": 11,
+    "ellipsoids": 19,
+}
+OBJECT_LEVEL_REPS = {
+    "dashes": 10,
+    "cell": 12,
+    "cgo": 13,
+    "callback": 14,
+    "extent": 15,
+    "slice": 16,
+    "angles": 17,
+    "dihedrals": 18,
+    "volume": 20,
+}
+REP_BITS = dict(ATOM_LEVEL_REPS, **OBJECT_LEVEL_REPS)
 
 _history_dir = None  # resolved on the first recorded command
 _history_pml = None  # this session's replay script
 _history_lock = threading.Lock()
 _history_broken = False  # set after a write failure; stops retrying
+
+
+def _history_directory():
+    """Resolve the history directory without creating anything. None if off.
+
+    Split out from _history_paths so a reader can find the directory without
+    the side effects of a writer. _history_paths writes a session-*.pml header
+    as soon as it is called, so a read built on it would fabricate a replay
+    script in a PyMOL that had run nothing -- the tool that answers "what did I
+    run" would answer by creating a file.
+    """
+    if _history_dir is not None:
+        return _history_dir
+    if HISTORY_SETTING.lower() in HISTORY_OFF:
+        return None
+    return HISTORY_SETTING or os.path.join(os.path.expanduser("~"), ".pymol-mcp")
 
 
 def _history_paths():
@@ -86,10 +147,11 @@ def _history_paths():
 
     if _history_dir is not None:
         return _history_dir, _history_pml
-    if HISTORY_SETTING.lower() in HISTORY_OFF:
+
+    directory = _history_directory()
+    if directory is None:
         return None, None
 
-    directory = HISTORY_SETTING or os.path.join(os.path.expanduser("~"), ".pymol-mcp")
     os.makedirs(directory, exist_ok=True)
 
     pml = os.path.join(directory, "session-%s.pml" % time.strftime("%Y%m%d-%H%M%S"))
@@ -128,7 +190,7 @@ def _record_history(command_name, args, source, result):
 
     # No source means an internal call, currently the connection health-check
     # ping, which is not part of the user's session.
-    if _history_broken or not source:
+    if _history_broken or not source or command_name in HISTORY_EXCLUDED:
         return
 
     try:
@@ -465,6 +527,44 @@ def _reject_control_characters(value):
         raise ValueError("selection may not contain newlines or control characters")
 
 
+def _check_setting_name(name):
+    """Validate a PyMOL setting name and return it.
+
+    Shared by every handler that takes a setting name. A name reaches PyMOL as
+    a lookup key, never as part of an expression, and this keeps it that way.
+    """
+    if (
+        not isinstance(name, str)
+        or not name
+        or (not name[0].isalpha() and name[0] != "_")
+        or not all(character.isalnum() or character == "_" for character in name)
+    ):
+        raise ValueError("invalid setting name")
+    return name
+
+
+def _atom_scope(selection):
+    r"""Wrap a selection so it addresses the atom layer, not the object layer.
+
+    PyMOL settings live in three layers -- global, per-object, per-atom -- and
+    punctuation alone decides which one `set` and `unset` write to. A bare
+    identifier addresses the object layer; anything parenthesised or compound
+    addresses the atoms. Measured, with a global of 0.6 and an atom override of
+    0.8 on `ala and name CA`:
+
+        unset via 'ala'               0.80 -> 0.80   silently does nothing
+        unset via 'all'               0.80 -> 0.80   silently does nothing
+        unset via '(ala)'             0.80 -> 0.60   cleared
+        unset via '(all)'             0.80 -> 0.60   cleared
+        unset via 'ala and name CA'   0.80 -> 0.60   cleared
+
+    Both failing forms report success, so the caller cannot tell. Wrapping is
+    the whole fix, and it is why the typed tools send an explicit scope rather
+    than letting a selection's shape decide.
+    """
+    return "(%s)" % selection
+
+
 def _parse_png_options(options):
     """Parse safe ``cmd.png`` keyword or positional arguments."""
     if options is None or not str(options).strip():
@@ -642,6 +742,7 @@ def build_command_dispatcher(cmd):
     def _set(args):
         selection = args.get("selection")
         if selection:
+            _reject_control_characters(selection)
             return cmd.set(args.get("setting", ""), args.get("value", ""), selection)
         return cmd.set(args.get("setting", ""), args.get("value", ""))
 
@@ -742,13 +843,37 @@ def build_command_dispatcher(cmd):
             return cmd.fetch(code, name)
         return cmd.fetch(code)
 
+    def _save_selection(selection):
+        r"""Normalise a save selection, defaulting the way cmd.save does.
+
+        cmd.save's own default is `(all)`, parenthesised, and the parentheses
+        are load-bearing: a bare word is read as an object name, and since no
+        object is called "all" it matches nothing. For a .pse that produces a
+        ~1 kB settings-only session file, saved and reported as a success --
+
+            cmd.save(p, "all",   -1)  ->   1011 bytes, no objects
+            cmd.save(p, "(all)", -1)  ->  10506 bytes, both objects
+
+        which is the "saved successfully but contains nothing" failure the
+        skill documented without ever explaining. Coordinate formats are
+        unaffected (a .pdb comes out identical either way), so it only ever
+        bit session files.
+        """
+        if not selection or selection == "all":
+            return "(all)"
+        return selection
+
     def _save(args):
         state = args.get("state", "-1")
         try:
             state = int(state)
         except (ValueError, TypeError):
             state = -1
-        return cmd.save(args.get("filename", ""), args.get("selection", "all"), state)
+        return cmd.save(
+            args.get("filename", ""),
+            _save_selection(args.get("selection")),
+            state,
+        )
 
     def _png(args):
         direct = {
@@ -774,14 +899,7 @@ def build_command_dispatcher(cmd):
         return cmd.set_view(_parse_view(args.get("view")))
 
     def _get_setting(args):
-        name = args.get("name", "")
-        if (
-            not isinstance(name, str)
-            or not name
-            or (not name[0].isalpha() and name[0] != "_")
-            or not all(character.isalnum() or character == "_" for character in name)
-        ):
-            raise ValueError("invalid setting name")
+        name = _check_setting_name(args.get("name", ""))
         return json.dumps({"name": name, "value": cmd.get(name)})
 
     def _select(args):
@@ -1037,7 +1155,6 @@ def build_command_dispatcher(cmd):
     ##########################################################################
 
     DNA_RESN = {"DA", "DC", "DG", "DT", "DI"}
-    PROTEIN_ATOM = {"CA", "N", "C", "O"}
 
     def _residue_index(selection):
         """Map (chain, resi) -> resn for every residue in a selection.
@@ -1292,6 +1409,337 @@ def build_command_dispatcher(cmd):
         cmd.deselect()
         return {"deleted": names, "count": len(names)}
 
+    def _inspect_setting(args):
+        """Read a setting at every layer it can live on.
+
+        cmd.get -- what the plain `get_setting` command calls -- reads the
+        global layer and returns it formatted as a string ('0.60000'). That
+        makes it useless for the failure it gets reached for: a selection
+        scoped `set` writes per-atom values that outlive hide, show, recolour
+        and any later global set, and the global reads clean the whole time.
+
+        The setting name is passed through `space` and read with getattr. It is
+        never interpolated into the expression, which is what keeps this out of
+        check_atom_expression's remit and off the list of things that can
+        smuggle in code.
+        """
+        name = _check_setting_name(args.get("name", ""))
+        sel = args.get("selection") or "all"
+        _reject_control_characters(sel)
+
+        rows = []
+        cmd.iterate(
+            sel,
+            "rows.append((model, getattr(s, _name)))",
+            space={"rows": rows, "getattr": getattr, "_name": name},
+        )
+
+        def plain(value):
+            """Normalise a setting value for comparison and for JSON.
+
+            PyMOL stores settings as C floats, and the two readers disagree
+            about the width: the per-atom read through `s.` widens to a double
+            (0.6 comes back as 0.6000000238418579) while get_setting_tuple
+            returns 0.6. Comparing those raw makes every setting look
+            overridden. Six significant figures is more than a float32 carries,
+            so this loses nothing real and keeps small values intact.
+            """
+            if isinstance(value, (tuple, list)):
+                return [plain(item) for item in value]
+            if isinstance(value, float):
+                return float("%.6g" % value)
+            return value
+
+        groups = {}
+        objects = set()
+        for model, value in rows:
+            objects.add(model)
+            normalised = plain(value)
+            entry = groups.setdefault(
+                repr(normalised),
+                {"value": normalised, "atoms": 0, "objects": set()},
+            )
+            entry["atoms"] += 1
+            entry["objects"].add(model)
+
+        ordered = sorted(groups.values(), key=lambda g: -g["atoms"])
+        truncated = len(ordered) > 20
+        values = [
+            {
+                "value": g["value"],
+                "atoms": g["atoms"],
+                "objects": sorted(g["objects"]),
+            }
+            for g in ordered[:20]
+        ]
+
+        global_value = plain(cmd.get_setting_tuple(name)[1][0])
+        object_values = []
+        for model in sorted(objects):
+            try:
+                object_values.append(
+                    {
+                        "object": model,
+                        "value": plain(cmd.get_setting_tuple(name, model)[1][0]),
+                    }
+                )
+            except Exception:
+                continue
+
+        base = {entry["object"]: entry["value"] for entry in object_values}
+        overridden = any(
+            g["value"] != base.get(model, global_value)
+            for g in ordered
+            for model in g["objects"]
+        )
+
+        return {
+            "name": name,
+            "selection": sel,
+            "atoms": len(rows),
+            "display": str(cmd.get(name)),
+            "global_value": global_value,
+            "object_values": object_values,
+            "values": values,
+            "uniform": len(ordered) <= 1,
+            "overridden": overridden,
+            "truncated": truncated,
+        }
+
+    def _unset(args):
+        """Clear a setting override at a chosen layer.
+
+        `scope` exists because in PyMOL the layer is chosen by punctuation: a
+        bare identifier writes the object layer, anything parenthesised or
+        compound writes the atoms, and clearing the wrong one reports success
+        while changing nothing. See _atom_scope for the measurements.
+
+        When `scope` is absent the selection passes through untouched. That is
+        the string path -- `parse_and_execute("unset x, ala")` has to behave as
+        native PyMOL does, or the command table stops being a faithful mirror
+        of PyMOL syntax. The typed tool always sends a scope.
+        """
+        name = _check_setting_name(args.get("setting", ""))
+        scope = args.get("scope")
+        selection = args.get("selection")
+
+        if scope == "global" or (scope is None and not selection):
+            return cmd.unset(name)
+        if not selection:
+            raise ValueError("unset with scope=%r needs a selection" % scope)
+        _reject_control_characters(selection)
+        if scope == "atom":
+            return cmd.unset(name, _atom_scope(selection))
+        return cmd.unset(name, selection)
+
+    def _get_representations(args):
+        """What is currently shown, per object and chain.
+
+        `hide everything` has no undo and destroys the representation state for
+        its selection, so the advice used to be that you cannot know what was
+        shown before -- you were choosing a representation when you restored,
+        not recovering one. The per-atom `reps` bitmask has been readable the
+        whole time; this exposes it.
+
+        Aggregated to (object, chain, mask) rather than returned per atom. The
+        payload is then bounded by the number of distinct groups, not by the
+        size of the structure.
+        """
+        sel = args.get("selection") or "all"
+        _reject_control_characters(sel)
+
+        acc = {}
+        cmd.iterate(
+            sel,
+            "acc[(model, chain, reps)] = acc.get((model, chain, reps), 0) + 1",
+            space={"acc": acc},
+        )
+
+        totals = {}
+        for (model, chain, _mask), count in acc.items():
+            totals[(model, chain)] = totals.get((model, chain), 0) + count
+
+        groups = []
+        for (model, chain), atoms in sorted(totals.items()):
+            per_rep = {}
+            for (m, c, mask), count in acc.items():
+                if (m, c) != (model, chain):
+                    continue
+                for name, bit in ATOM_LEVEL_REPS.items():
+                    if mask & (1 << bit):
+                        per_rep[name] = per_rep.get(name, 0) + count
+            groups.append(
+                {
+                    "object": model,
+                    "chain": chain,
+                    "atoms": atoms,
+                    "reps": sorted(per_rep),
+                    "per_rep": [
+                        {"rep": name, "atoms": per_rep[name]}
+                        for name in sorted(per_rep)
+                    ],
+                    # A rep on some but not all of a group looks identical to a
+                    # rep on all of it in a render, and means something quite
+                    # different.
+                    "partial": any(count < atoms for count in per_rep.values()),
+                }
+            )
+
+        union = sorted({name for group in groups for name in group["reps"]})
+        total_atoms = sum(group["atoms"] for group in groups)
+        return {
+            "selection": sel,
+            "atoms": total_atoms,
+            "reps": union,
+            "groups": groups,
+            "hidden": total_atoms > 0 and not union,
+            "note": (
+                "Object-level representations (%s) never appear in a per-atom "
+                "mask, so this cannot report them either way."
+                % ", ".join(sorted(OBJECT_LEVEL_REPS))
+            ),
+        }
+
+    def _get_history(args):
+        """Read back the session history the plugin has been writing.
+
+        The alternative was telling the caller to shell out and grep
+        history.jsonl, which contradicts the rest of the protocol and only
+        works for a caller that can reach the filesystem PyMOL is running on.
+
+        Read here rather than server-side: the history directory comes from
+        PYMOL_MCP_HISTORY in the environment PyMOL was launched from, which is
+        not the server's environment. Only this process knows where it is
+        writing, and only this process knows this session's replay script.
+        """
+        directory = _history_directory()
+        if directory is None:
+            return {
+                "enabled": False,
+                "directory": None,
+                "script": None,
+                "entries": [],
+                "total": 0,
+                "truncated": False,
+            }
+
+        try:
+            limit = int(args.get("limit", 20))
+        except (ValueError, TypeError):
+            limit = 20
+        limit = max(1, min(limit, 500))
+        want = args.get("command")
+        failed_only = bool(args.get("failed_only"))
+
+        # Bounded while streaming: a long-running session's history is not
+        # something to hold in memory to then throw away all but the tail of.
+        kept = deque(maxlen=limit)
+        total = 0
+        path = os.path.join(directory, "history.jsonl")
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        # A half-written final record is exactly what a crash
+                        # leaves behind, and recovery is when this is read.
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    if failed_only and record.get("ok", True):
+                        continue
+                    if want and record.get("command") != want:
+                        continue
+                    total += 1
+                    kept.append(record)
+        except OSError:
+            pass
+
+        script = _history_pml
+        if script is None:
+            try:
+                sessions = sorted(
+                    name
+                    for name in os.listdir(directory)
+                    if name.startswith("session-") and name.endswith(".pml")
+                )
+                if sessions:
+                    script = os.path.join(directory, sessions[-1])
+            except OSError:
+                script = None
+
+        return {
+            "enabled": True,
+            "directory": directory,
+            "script": script,
+            "entries": list(kept),
+            "total": total,
+            "truncated": total > len(kept),
+        }
+
+    def _save_file(args):
+        """Save, and report what was actually written.
+
+        cmd.save returns None whatever happens, so the plain `save` command can
+        only ever answer "executed successfully" -- which is why verifying a
+        .pse meant saving it, reopening it in a fresh PyMOL and counting the
+        objects by hand. The facts are all available here; returning them turns
+        that ritual into a return value.
+
+        The path is resolved here rather than server-side: cmd.save resolves a
+        relative filename against PyMOL's working directory, which the server
+        cannot see.
+        """
+        filename = args.get("filename", "")
+        if not filename:
+            raise ValueError("save_file requires a filename")
+        _reject_control_characters(filename)
+        sel = _save_selection(args.get("selection"))
+        _reject_control_characters(sel)
+        try:
+            state = int(args.get("state", -1))
+        except (ValueError, TypeError):
+            state = -1
+
+        cmd.save(filename, sel, state)
+
+        path = os.path.abspath(os.path.expanduser(filename))
+        objects = list(cmd.get_object_list(sel))
+        result = {
+            "path": path,
+            "bytes": os.path.getsize(path),
+            "format": os.path.splitext(path)[1].lstrip(".").lower(),
+            "selection": sel,
+            "objects": objects,
+            "object_count": len(objects),
+            "atoms": cmd.count_atoms(sel),
+            "states": cmd.count_states(sel),
+            "objects_verified": [],
+        }
+
+        # A .pse is a pickle, and a settings-only one saves and reports success
+        # exactly like a full session. Checking that each object's name appears
+        # in the bytes is necessary rather than sufficient, but it catches that
+        # failure without unpickling anything. Names shorter than three
+        # characters are skipped -- too likely to occur by chance.
+        if result["format"] == "pse":
+            try:
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                result["objects_verified"] = [
+                    name
+                    for name in objects
+                    if len(name) >= 3 and name.encode("utf-8", "replace") in data
+                ]
+            except OSError:
+                pass
+
+        return result
+
     def _enable(args):
         return cmd.enable(args.get("name", "all"))
 
@@ -1309,6 +1757,11 @@ def build_command_dispatcher(cmd):
         "list_residues": _list_residues,
         "contacts": _contacts,
         "get_gaps": _get_gaps,
+        "save_file": _save_file,
+        "get_history": _get_history,
+        "get_representations": _get_representations,
+        "inspect_setting": _inspect_setting,
+        "unset": _unset,
         "enable": _enable,
         "disable": _disable,
         "show": _show,

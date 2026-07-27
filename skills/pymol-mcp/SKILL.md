@@ -1,6 +1,6 @@
 ---
 name: pymol-mcp
-description: Drive PyMOL through the pymol MCP server. Covers the typed tools (get_chains, count, list_residues, contacts, get_gaps, get_secondary_structure, get_sequence, measure, select, apply, clear_selections, render_png, render_movie) and when to prefer them over selection strings, starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax and its silent traps, splitting DNA from RNA, labelling, transparency, rendering stills and animations, and verifying a change by looking at it. Use whenever calling mcp__pymol__* tools, or when a PyMOL tool call fails to connect.
+description: Drive PyMOL through the pymol MCP server. Covers the typed tools (get_chains, count, list_residues, contacts, get_gaps, get_secondary_structure, get_sequence, measure, select, apply, clear_selections, inspect_setting, unset_setting, get_representations, get_history, save_file, render_png, render_movie) and when to prefer them over selection strings, starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax and its silent traps, splitting DNA from RNA, labelling, transparency and why a setting can be sticky at three different layers, reading back what was run, saving sessions that actually contain something, rendering stills and animations, and verifying a change by looking at it. Use whenever calling mcp__pymol__* tools, or when a PyMOL tool call fails to connect.
 ---
 
 # Driving PyMOL through the MCP server
@@ -189,11 +189,18 @@ mistake documented further down.
 | `select` | name a selection, and report what it caught |
 | `apply` | colour/show/hide/zoom a typed selection |
 | `clear_selections` | delete every named selection before rendering |
+| `inspect_setting` | a setting at all three layers, and which atoms override it |
+| `unset_setting` | clear a scoped override, at a layer you choose |
+| `get_representations` | what is currently shown, per object and chain |
+| `get_history` | what was run, what failed, and where files went |
+| `save_file` | save, and get back the path, size and object count |
 
 A `Selector` takes `object`, `chain`, `residues`, `residue_range`, `molecule`,
 `atom_names`, or `raw` as an escape hatch for anything the model cannot say.
 `raw` is deliberately available — PyMOL's algebra is more expressive than the
-model — but reaching for it puts the traps below back in play.
+model — but reaching for it puts the traps below back in play. A single field
+renders as a bare word (`Selector(object="bac")` → `bac`), which matters only
+for settings; see below.
 
 ### Commands that do NOT exist in the table
 
@@ -202,6 +209,8 @@ model — but reaching for it puts the traps below back in play.
 | `iterate` / `print` | neither | `mcp__pymol__list_residues`, returning chain/resi/resn |
 | counts | neither | `mcp__pymol__count`, returning atoms, residues and chains |
 | RNA vs DNA selector | neither | `Selector(molecule="rna")`, or residue names by hand |
+| a setting's real value | `get_setting`, global layer only | `mcp__pymol__inspect_setting` |
+| to clear a scoped setting | `unset`, where punctuation picks the layer | `mcp__pymol__unset_setting`, which takes a scope |
 
 `bg_color white` works; it used to be missing and need `set bg_rgb, white`.
 
@@ -212,11 +221,13 @@ lambdas, comprehensions and any call outside `str int float abs round len min
 max` are rejected.
 
 Use `mcp__pymol__get_view` and `mcp__pymol__set_view` to preserve an exact
-camera across experiments or restarts. Use `mcp__pymol__get_setting` to inspect
-one named setting. The server still cannot enumerate arbitrary atom
-properties, but the typed tools cover the common questions: `count`,
-`list_residues`, `get_chains`, `get_gaps` and `contacts` all return structured
-data. Inspect a render for visual state.
+camera across experiments or restarts. Use `mcp__pymol__inspect_setting` to read
+a setting — `get_setting` returns the global layer as a formatted string and
+cannot see a per-object or per-atom override. The server still cannot enumerate
+arbitrary atom properties, but the typed tools cover the common questions:
+`count`, `list_residues`, `get_chains`, `get_gaps`, `contacts` and
+`get_representations` all return structured data. Inspect a render for anything
+genuinely visual.
 
 ## Measuring
 
@@ -296,19 +307,16 @@ one-pixel viewport or a bad camera can otherwise look blank.
 
 ## Treat `.pse` as a separate deliverable
 
-A successful `save file.pse` response is not proof that the session contains
-coordinates. Verify all three:
+**Use `mcp__pymol__save_file` rather than the `save` command.** It returns the
+path, byte size, object list and atom count, and for a `.pse` also
+`objects_verified` — the objects whose names are present in the written bytes.
+An empty `objects_verified` alongside a non-empty `objects` means the file does
+not contain the session you think it does.
 
-1. The file is plausibly sized for the structure.
-2. A fresh PyMOL process can open it.
-3. `list_instances` reports the expected object names and a proof render is
-   non-blank.
-
-If reopening reports no objects, stop resaving the same live state. Export or
-recover the source PDB/mmCIF, rebuild from that source, and create the session
-with native PyMOL. The MCP save wrapper has produced small settings-only `.pse`
-files in practice while still reporting success. A native headless save is a
-valid fallback:
+A publication `.pse` still deserves a fresh-process open: `objects_verified`
+proves the names are in the bytes, not that the file loads. If it comes back
+empty, rebuild from the source coordinates rather than resaving the same live
+state. A native headless save is a valid fallback:
 
 ```
 pymol -cq -d "load /abs/model.pdb, model; <styling>; save /abs/model.pse; quit"
@@ -362,30 +370,17 @@ and every later figure of that object renders washed out, with no obvious cause
 — the colours are right, they are just faded. `set cartoon_transparency, 0`
 alone does **not** fix it.
 
-`unset` is not in the command table, so the fix is to overwrite the setting. But
-**you must overwrite it with the same selection expression that set it**, and
-the two obvious shortcuts both fail silently. Tested directly, setting 0.8 on
-`bac and chain A and resi 540-606` and then trying to clear it:
+**Find it with `mcp__pymol__inspect_setting` — check `overridden` — and clear it
+with `mcp__pymol__unset_setting`.** Clearing is not the same as setting 0:
+`set ..., 0` pins the atoms at zero, clearing lets them inherit the layer
+beneath.
 
-| Clearing command | Result |
-|---|---|
-| `set cartoon_transparency, 0, bac` | **still transparent** |
-| `set cartoon_transparency, 0, all` | **still transparent** |
-| `set cartoon_transparency, 0, bac and chain A` | cleared |
-| `set cartoon_transparency, 0, bac and chain A and resi 540-606` | cleared |
-
-A bare object name writes an *object-level* setting, while a selection
-expression writes *atom-level* settings, and atom-level wins — so clearing at
-object level cannot reach it. `all` fails too, which is the surprising one, so
-do not reach for it as a blanket reset.
-
-**Reset by re-running your own `set` with the value back at 0**, on the same
-selection. If you have lost track of which selection it was, the session log
-has it:
-
-```
-grep cartoon_transparency ~/.pymol-mcp/history.jsonl
-```
+Writing `set` or `unset` by hand, **punctuation picks the layer**: a bare
+identifier (`ala`, `all`) addresses the object layer, anything parenthesised or
+compound addresses the atoms. Clearing the wrong one reports success and changes
+nothing, so `(all)` is a working blanket reset and bare `all` is not.
+`unset_setting` sends the layer explicitly, which is why it does not ask you to
+remember that.
 
 A **global** `set cartoon_transparency, 0.6` — no selection at all — works
 reliably and applies to every atom that carries no override. Combined with the
@@ -407,10 +402,12 @@ changes needed.
 > render, which makes them a poor diagnostic and an easy way to talk yourself
 > into a bug that is not there.
 
-**`get_setting` cannot diagnose this.** It reports the global layer only: with
-the HNH visibly transparent on screen, `get_setting cartoon_transparency`
-returned `0.00000`. A clean reading there does not mean the scene is clean —
-you have to look at a render.
+**`get_setting` cannot diagnose this, and never could.** It reports the global
+layer only, formatted as a string: with the HNH visibly transparent on screen,
+`get_setting cartoon_transparency` returned `0.00000`. A clean reading there
+says nothing about the scene. Use `inspect_setting`, which returns the same
+value as `display` alongside the object and atom layers that actually explain
+the render.
 
 The same is true of `stick_transparency`, `sphere_transparency`,
 `cartoon_tube_radius` and any other per-object setting. If a render is
@@ -553,13 +550,11 @@ piece of session state you *can* read back:
 | `history.jsonl` | What was run, in order, and which commands failed |
 | `session-<timestamp>.pml` | Handing the user a script that rebuilds the figure |
 
-Cannot remember whether a setting was applied, or which of several attempts
-actually worked? Check, rather than re-running blind:
-
-```
-tail -20 ~/.pymol-mcp/history.jsonl
-grep '"ok": false' ~/.pymol-mcp/history.jsonl
-```
+**Read it with `mcp__pymol__get_history`**, not with a shell — the directory is
+only known inside PyMOL, which resolves `PYMOL_MCP_HISTORY` from its own
+environment. `failed_only=True` finds the attempt that did not work;
+`command="load"` finds what was loaded. `limit` counts matching records, so a
+filter never comes back empty just because recent traffic was something else.
 
 Each record has `command`, `args`, `source` (the literal syntax), `ok`, and
 either `output` or `error`. `load`, `save` and `png` also carry a `file` entry
@@ -593,7 +588,8 @@ If the structure vanishes and you did not load it yourself, you cannot ask PyMOL
 what it was. Check the session history the plugin writes:
 
 ```
-grep '"command": "\(fetch\|load\)"' ~/.pymol-mcp/history.jsonl | tail -5
+get_history(command="load")
+get_history(command="fetch")
 ```
 
 Every `load` records the absolute path it read, so this identifies the file even
@@ -835,7 +831,10 @@ png <scratchpad>/check.png, width=1000, height=800, dpi=150, ray=1
 
 ## Irreversible actions
 
-`hide everything, <sel>` destroys the representation state for that selection.
-There is no undo, and you cannot query what was shown before. When restoring
-something you hid, you are *choosing* a representation, not recovering one. Say
-so rather than implying the original came back.
+`hide everything, <sel>` destroys the representation state for that selection,
+and there is no undo.
+
+**Call `mcp__pymol__get_representations` first if you intend to put it back** —
+it reports what is shown per object and chain. Without that record you are
+*choosing* a representation when you restore, not recovering one. Say so rather
+than implying the original came back.

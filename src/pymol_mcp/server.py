@@ -10,7 +10,7 @@ import tempfile
 import zlib
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any, AsyncIterator
+from typing import Annotated, Any, AsyncIterator, Literal
 
 from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.types import CallToolResult, TextContent
@@ -21,13 +21,17 @@ from pymol_mcp.api import (
     ClearedSelections,
     Counts,
     Gaps,
+    History,
     Measurement,
     MovieMeta,
     RenderMeta,
+    Representations,
     ResidueList,
+    SaveMeta,
     SecondaryStructure,
     Selector,
     Sequence,
+    SettingReport,
 )
 from pymol_mcp.models import (
     CommandDef,
@@ -57,6 +61,10 @@ INTROSPECTION_COMMANDS = frozenset(
         "get_sequence",
         "measure",
         "clear_selections",
+        "save_file",
+        "get_history",
+        "get_representations",
+        "inspect_setting",
     }
 )
 
@@ -174,6 +182,15 @@ PYMOL_COMMANDS: dict[str, CommandDef] = {
         parameters=[
             ParameterDef(name="setting", required=True),
             ParameterDef(name="value", required=True),
+            ParameterDef(name="selection", required=False),
+        ],
+        check_selection=False,
+    ),
+    "unset": CommandDef(
+        description="Clears a setting override, restoring the layer beneath it",
+        pattern=r"^unset\s+([\w.]+)(?:\s*,\s*(.+))?$",
+        parameters=[
+            ParameterDef(name="setting", required=True),
             ParameterDef(name="selection", required=False),
         ],
         check_selection=False,
@@ -1241,19 +1258,23 @@ This server does NOT accept natural language. `parse_and_execute` matches its
 input against a fixed table of PyMOL command patterns, so you must translate the
 user's request into literal PyMOL syntax before calling it.
 
-Three rules cover most mistakes:
+Four rules cover most mistakes:
   1. One command per call. Split a multi-step request into separate calls.
   2. A selection is a comma-separated second argument, not a prepositional
      phrase: `show cartoon, chain A` -- not `show cartoon for chain A`.
   3. `fetch` downloads by PDB accession code; `load` reads a local file path.
      "Load PDB 1UBQ" means `fetch 1ubq`.
+  4. Settings live on three layers -- global, per object, per atom -- and the
+     inner ones win. `get_setting` reads only the global one, so it cannot
+     explain a scene a scoped `set` has altered. Use `inspect_setting` to find
+     an override and `unset_setting` to clear one.
 
 Call `list_commands` for the full command table with exact patterns. Prefer it
 over guessing: unrecognized input is rejected, not interpreted.
 
-Load the `pymol-mcp` skill if it is available. It covers the table's gaps (no
-`iterate`, no `print`), selection idioms, how to enumerate chains, and the
-render-then-look loop for confirming a change actually landed."""
+Load the `pymol-mcp` skill if it is available. It covers the table's gaps,
+selection idioms, and the render-then-look loop for confirming a change
+actually landed."""
 
 mcp = FastMCP(
     "PyMOLMCPServer", instructions=SERVER_INSTRUCTIONS, lifespan=server_lifespan
@@ -1477,7 +1498,15 @@ def set_view(
 def get_setting(
     ctx: Context, name: str, instance: int | None = None
 ) -> Any:
-    """Return one named PyMOL setting without changing the scene."""
+    """Return one named PyMOL setting, as PyMOL formats it, without changing
+    the scene.
+
+    This reads the **global** layer only, and returns it as a string --
+    `'0.60000'`, not `0.6`. Settings also live per object and per atom, and
+    those layers win over the global one, so a clean reading here does not mean
+    the scene is clean. Use `inspect_setting` for anything that might carry an
+    override, and `unset_setting` to clear one.
+    """
     if not re.fullmatch(r"[A-Za-z_]\w*", name):
         raise ValueError(
             "Setting name must contain only letters, numbers, and underscores"
@@ -1824,6 +1853,195 @@ def clear_selections(ctx: Context, instance: int | None = None) -> ClearedSelect
     return ClearedSelections.model_validate(
         _introspect("clear_selections", {}, instance)
     )
+
+
+@mcp.tool()
+def inspect_setting(
+    ctx: Context,
+    name: str,
+    selection: Selector | None = None,
+    instance: int | None = None,
+) -> SettingReport:
+    """Read a setting at every layer, and report which atoms override it.
+
+    PyMOL settings live on three layers -- global, per object, per atom -- and
+    the inner ones win. `set <name>, <value>, <selection>` writes the atom
+    layer, and that survives hide, show, recolouring and any later global
+    `set`. The usual symptom is a figure that renders inexplicably pale with
+    correct colours, while `get_setting` reports the global value as clean the
+    whole time, because the global value *is* clean.
+
+    `overridden` answers the question directly. `values` groups the distinct
+    values across the selection, so a partial override shows up as more than
+    one group rather than as an average.
+
+    Clear what you find with `unset_setting`.
+    """
+    args: dict[str, Any] = {"name": name}
+    if selection is not None:
+        args["selection"] = selection.to_selection()
+    return SettingReport.model_validate(
+        _introspect("inspect_setting", args, instance)
+    )
+
+
+def _unset_setting(
+    ctx: Context,
+    name: str,
+    selection: Selector | None = None,
+    scope: Literal["atom", "object", "global"] = "atom",
+    instance: int | None = None,
+) -> SettingReport:
+    """Implementation. The decorated tool below is a MagicMock under the test
+    stub, so the logic lives here where tests can reach it -- the same split as
+    _render_png/render_png.
+
+    The scope is sent explicitly rather than left to the selection's shape.
+    A single-field Selector renders as a bare identifier (`Selector(object="x")`
+    -> `x`), and a bare identifier addresses the object layer, so passing one
+    straight through would silently clear nothing at all.
+    """
+    if not re.fullmatch(r"[A-Za-z_]\w*", name):
+        raise ValueError(
+            "Setting name must contain only letters, numbers, and underscores"
+        )
+
+    args: dict[str, Any] = {"setting": name, "scope": scope}
+    if scope != "global":
+        if selection is None:
+            raise ValueError(
+                "unset_setting needs a selection unless scope='global'"
+            )
+        args["selection"] = selection.to_selection()
+
+    source = "unset %s" % name
+    if "selection" in args:
+        source = "unset %s, %s" % (name, args["selection"])
+    response = get_pymol_connection(instance).send_command("unset", args, source=source)
+    _direct_output(response)
+
+    # Report the state afterwards, so the call that clears also proves it
+    # cleared -- the same shape as select returning Counts.
+    return SettingReport.model_validate(
+        _introspect(
+            "inspect_setting",
+            {"name": name, "selection": args.get("selection", "all")},
+            instance,
+        )
+    )
+
+
+@mcp.tool()
+def unset_setting(
+    ctx: Context,
+    name: str,
+    selection: Selector | None = None,
+    scope: Literal["atom", "object", "global"] = "atom",
+    instance: int | None = None,
+) -> SettingReport:
+    """Clear a setting override at a chosen layer, and report what remains.
+
+    This is the fix for a scoped `set` that has outlived its figure. Setting a
+    value back to 0 is not the same thing: it pins the atoms at 0, where
+    clearing lets them inherit the layer beneath. With a global of 0.6 and an
+    override of 0.8, `set ..., 0` gives 0.0 and this gives 0.6.
+
+    `scope` picks the layer, because in PyMOL syntax punctuation picks it and
+    getting it wrong reports success while changing nothing:
+
+    - `atom` (the default) clears the per-atom values a scoped `set` wrote.
+    - `object` clears the object layer, which a bare object name would write.
+    - `global` clears the global default; no selection needed.
+
+    Returns the same report as `inspect_setting`, so you can see the clear
+    landed rather than re-rendering to check.
+    """
+    return _unset_setting(ctx, name, selection, scope, instance)
+
+
+@mcp.tool()
+def get_representations(
+    ctx: Context, selection: Selector | None = None, instance: int | None = None
+) -> Representations:
+    """Report what is currently shown, by object and chain.
+
+    Call this *before* `hide everything`, which destroys the representation
+    state for its selection with no undo. Recording what was shown is the
+    difference between restoring a scene and choosing a new one.
+
+    `partial` on a group means only some of its atoms carry a representation --
+    which looks the same as all of them in a render and rarely means the same
+    thing. `hidden` means the selection has atoms but nothing shown, worth
+    checking when a render comes back empty.
+
+    Object-level representations (cell, cgo, extent, slice, volume, dashes,
+    angles, dihedrals) do not appear in a per-atom mask, so this reports
+    nothing about them either way.
+    """
+    args: dict[str, Any] = {}
+    if selection is not None:
+        args["selection"] = selection.to_selection()
+    return Representations.model_validate(
+        _introspect("get_representations", args, instance)
+    )
+
+
+@mcp.tool()
+def get_history(
+    ctx: Context,
+    limit: int = 20,
+    command: str | None = None,
+    failed_only: bool = False,
+    instance: int | None = None,
+) -> History:
+    """Read back what has been run in this PyMOL, and how it went.
+
+    The plugin logs every command it executes, which is the one piece of
+    session state that can be read back after the fact. Use it to answer
+    "did that setting actually apply", "which of those attempts failed", and
+    "where did that PNG go" -- `file` entries carry the absolute path, so it
+    answers the last one even when the command used a relative one.
+
+    `command="load"` (or `"fetch"`) recovers what was loaded after a session
+    has been cleared. `failed_only=True` is the quickest way to find the call
+    that did not do what you thought.
+
+    The history is per PyMOL launch, and anything done in the GUI never reached
+    the server, so a replay of `script` can diverge from what is on screen.
+    """
+    args: dict[str, Any] = {"limit": limit, "failed_only": failed_only}
+    if command:
+        args["command"] = command
+    return History.model_validate(_introspect("get_history", args, instance))
+
+
+@mcp.tool()
+def save_file(
+    ctx: Context,
+    filename: str,
+    selection: Selector | None = None,
+    state: int = -1,
+    instance: int | None = None,
+) -> SaveMeta:
+    """Save to a file and report the path, size and what went into it.
+
+    Prefer this to the `save` command. `cmd.save` returns nothing whatever
+    happens, so `save` can only report that it executed -- which is why
+    checking a session file meant reopening it in a fresh PyMOL and counting
+    objects by hand. Here the object list, atom count and byte size come back
+    with the call.
+
+    For a `.pse`, `objects_verified` names the objects actually found in the
+    written bytes. A settings-only session file -- one that saves and reports
+    success while containing no coordinates -- shows up as an empty list.
+
+    The path returned is absolute, resolved against PyMOL's working directory,
+    so it answers "where did that go" when the filename was relative.
+    """
+    args: dict[str, Any] = {"filename": filename, "state": state}
+    if selection is not None:
+        args["selection"] = selection.to_selection()
+    return SaveMeta.model_validate(_introspect("save_file", args, instance))
 
 
 ##############################################################################

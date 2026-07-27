@@ -77,7 +77,8 @@ needs about 2400 pixels.
 
 ## Reproducibility
 
-Use `get_setting` before changing an uncertain render control. Save the camera
+Use `inspect_setting` before changing an uncertain render control — it reads the
+per-object and per-atom layers that `get_setting` cannot see. Save the camera
 with `get_view` once framing is approved. Keep the successful setup commands in
 an `execute_batch` list or replay script. Verify both proof and final render
 visually; correct dimensions do not prove that selections, representations, or

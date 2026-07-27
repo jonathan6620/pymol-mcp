@@ -11,7 +11,7 @@ designed out. See docs/typed-facade-design.md.
 """
 
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -249,6 +249,145 @@ class Measurement(BaseModel):
 class ClearedSelections(BaseModel):
     deleted: list[str]
     count: int
+
+
+class SettingGroup(BaseModel):
+    """One distinct value of a setting, and the atoms carrying it."""
+
+    value: Any = None
+    atoms: int
+    objects: list[str]
+
+
+class ObjectSetting(BaseModel):
+    object: str
+    value: Any = None
+
+
+class SettingReport(BaseModel):
+    """A setting read at all three layers it can live on.
+
+    `display` is what the plain `get_setting` command returns -- the global
+    layer, formatted as a string. `global_value`, `object_values` and `values`
+    are the three layers proper, innermost last: an atom-level value wins over
+    an object-level one, which wins over the global.
+
+    `overridden` is the field to check. It means at least one atom in the
+    selection carries a value that differs from the layer it would otherwise
+    inherit, which is the condition that makes a render look wrong while every
+    global reads clean.
+    """
+
+    name: str
+    selection: str
+    atoms: int
+    display: str
+    global_value: Any = None
+    object_values: list[ObjectSetting] = Field(default_factory=list)
+    values: list[SettingGroup] = Field(default_factory=list)
+    uniform: bool
+    overridden: bool
+    truncated: bool = False
+    note: str | None = None
+
+
+class RepCount(BaseModel):
+    rep: str
+    atoms: int
+
+
+class RepGroup(BaseModel):
+    """What is shown for one object's chain.
+
+    `partial` means some but not all of the group carries some representation.
+    In a render that is indistinguishable from the whole group carrying it,
+    and it is usually the thing you actually wanted to know.
+    """
+
+    object: str
+    chain: str
+    atoms: int
+    reps: list[str]
+    per_rep: list[RepCount]
+    partial: bool
+
+
+class Representations(BaseModel):
+    """Current representation state, aggregated by object and chain."""
+
+    selection: str
+    atoms: int
+    reps: list[str]
+    groups: list[RepGroup]
+    hidden: bool
+    note: str | None = None
+
+
+class HistoryFile(BaseModel):
+    """A path a command read or wrote, recorded absolute."""
+
+    path: str
+    direction: Literal["in", "out"]
+
+
+class HistoryEntry(BaseModel):
+    """One history record.
+
+    Almost every field is optional because two different writers produce these.
+    Commands carry `command`/`args`/`source`; listener events carry
+    `event`/`detail` and no command at all. A model that insisted on `command`
+    would fail to parse exactly the records written when something went wrong.
+    """
+
+    ts: str
+    ok: bool = True
+    command: str | None = None
+    event: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+    source: str | None = None
+    output: str | None = None
+    error: str | None = None
+    detail: str | None = None
+    replayable: bool = True
+    file: HistoryFile | None = None
+
+
+class History(BaseModel):
+    """Recent history, newest last.
+
+    `script` is the replay .pml for this PyMOL session, or the most recent one
+    in the directory if this session has not written any commands yet.
+    """
+
+    enabled: bool
+    directory: str | None = None
+    script: str | None = None
+    entries: list[HistoryEntry]
+    total: int
+    truncated: bool = False
+
+
+class SaveMeta(BaseModel):
+    """What a save actually wrote.
+
+    A plain model rather than the Annotated[CallToolResult, ...] shape the
+    renders use: that indirection exists only because image bytes cannot go in
+    structuredContent, and a saved file has no bytes to return.
+
+    `objects_verified` lists the objects whose names were found in a .pse's
+    bytes. Necessary, not sufficient -- but a settings-only session file
+    reports success identically to a complete one, and this distinguishes them.
+    """
+
+    path: str
+    bytes: int
+    format: str
+    selection: str
+    objects: list[str]
+    object_count: int
+    atoms: int
+    states: int
+    objects_verified: list[str] = Field(default_factory=list)
 
 
 class RenderMeta(BaseModel):

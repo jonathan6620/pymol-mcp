@@ -314,6 +314,9 @@ pymol -r ~/.pymol-mcp/session-20260722-114646.pml
 `load`, `save`, and `png` also record the absolute path they touched, since
 PyMOL resolves a relative path against its own working directory.
 
+The `get_history` tool reads all of this back without needing shell access to
+the machine PyMOL is running on, filtered by command or to failures only.
+
 Set `PYMOL_MCP_HISTORY=/some/dir` to write elsewhere, or `PYMOL_MCP_HISTORY=off`
 to disable. The variable is read from the environment PyMOL was launched from.
 

@@ -239,6 +239,11 @@ plugin has PyMOL's Python.
 | `list_residues(selector)` | `list[Residue]` | the absent `iterate` |
 | `contacts(a, b, within, whole_residues)` | `list[Residue]` | the `byres` precedence trap |
 | `get_gaps(object, chain)` | `list[tuple[int, int]]` | parsing the structure file by hand |
+| `inspect_setting(name, selector)` | `SettingReport` | "you have to look at a render" |
+| `unset_setting(name, selector, scope)` | `SettingReport` | the four-row clearing table |
+| `get_representations(selector)` | `Representations` | "you cannot query what was shown" |
+| `get_history(limit, command, failed_only)` | `History` | `grep`ing `history.jsonl` from a shell |
+| `save_file(filename, selector)` | `SaveMeta` | save, reopen in a fresh PyMOL, count objects |
 
 `contacts` is the interesting one: `whole_residues: bool` is exactly the
 distinction `byres` placement encodes, expressed as a field that cannot be
@@ -252,6 +257,14 @@ command that already exists.
 **Everything else — unchanged.** `ray`, `png`, `save`, `load`, `fetch`, `scene`,
 the movie commands, `set`, the `util.*` family. They have no selection-algebra
 problem and typing them buys nothing.
+
+> **Wrong about two of those.** `set` and `save` both turned out to have a
+> selection-algebra problem, and a nastier one than the cases this design was
+> built for, because in both the failing form is a *bare word*. `set`/`unset`
+> write the object layer when handed a bare identifier and the atom layer
+> otherwise; `save` reads a bare `all` as an object name, matches nothing, and
+> writes an empty `.pse`. Neither errors. See "Layers, and the bare-word trap"
+> below.
 
 **Explicitly out of scope:** `alter` and `alter_state` keep their current
 AST-validated expression path. Modelling arbitrary per-atom arithmetic is a
@@ -369,3 +382,101 @@ The testing note above proved accurate: `conftest` stubbing FastMCP means
 `@mcp.tool()` replaces a function with a `MagicMock`, so any test calling a
 decorated tool exercises nothing. Implementations are private, with thin
 decorated wrappers, following the existing `_render_png`/`render_png` split.
+
+## Layers, and the bare-word trap
+
+A second round of tools, added on the principle above: the gap gets filled as a
+tool rather than as another paragraph. Five of them --- `inspect_setting`,
+`unset_setting`, `get_representations`, `get_history`, `save_file` --- together
+removing about 90 lines from the skill.
+
+Everything below was found by probing a real PyMOL, not by reading the API docs,
+and three of the four findings contradicted the plan they were meant to confirm.
+
+**Punctuation picks the setting layer.** The design assumed the fix for a sticky
+scoped `set` was to expose `unset`. It is not, because `unset` has exactly the
+same trap: a bare identifier addresses the *object* layer, anything
+parenthesised or compound addresses the *atoms*. With a global of 0.6 and an
+override of 0.8 on `ala and name CA`:
+
+```
+unset via 'ala'               0.80 -> 0.80   silently does nothing
+unset via 'all'               0.80 -> 0.80   silently does nothing
+unset via '(ala)'             0.80 -> 0.60   cleared
+unset via '(all)'             0.80 -> 0.60   cleared
+unset via 'ala and name CA'   0.80 -> 0.60   cleared
+```
+
+So the skill's clearing table was also incomplete in a costly direction: it told
+the reader `all` fails and not to use it as a blanket reset, when `(all)` is a
+working blanket reset.
+
+This is a hazard for the facade in general. `Selector.to_selection()` returns a
+lone clause unwrapped, so `Selector(object="bac")` renders as the bare word
+`bac` --- correct everywhere else, and exactly wrong here. `unset_setting`
+therefore sends an explicit `scope` and lets the plugin apply it, rather than
+letting the shape of a selection decide which layer gets written. Any future
+layered command needs the same treatment.
+
+**`unset` is not `set ..., 0`.** Overwriting pins the atoms at zero; clearing
+removes the entry so they inherit the layer beneath. Invisible while the global
+is 0, which is why the difference was never noticed and the workaround looked
+adequate.
+
+**`cmd.get` returns formatted strings.** `get_setting` has always returned
+`'0.60000'`, not `0.6` --- its annotation is `Any` and nothing caught it.
+`cmd.get_setting_tuple` is the typed reader, and it takes an object name for the
+object layer. The atom layer is only reachable through `cmd.iterate`, via the
+`s.` namespace. `inspect_setting` passes the setting name through `space=` and
+reads it with `getattr` rather than interpolating it into the expression, which
+is what keeps it outside `check_atom_expression`'s remit --- interpolation would
+have been a real injection hole in a dispatcher that is otherwise exec-free.
+
+**`save` was writing empty session files.** The handler passed a bare `"all"` to
+`cmd.save`, whose own default is `'(all)'`. Same bare-word trap: PyMOL read it
+as an object name, no object is called `all`, and a `.pse` came out as a ~1 kB
+settings-only file --- saved, and reported as a success.
+
+```
+cmd.save(p, "all",   -1)  ->   1011 bytes, no objects
+cmd.save(p, "(all)", -1)  ->  10506 bytes, both objects
+```
+
+Coordinate formats are unaffected --- a `.pdb` is byte-identical either way ---
+which is why it only ever bit session files, and why the skill had recorded the
+symptom ("the MCP save wrapper has produced small settings-only `.pse` files in
+practice while still reporting success") without ever finding the cause. The
+bug was found by `save_file`'s `objects_verified` check failing in a test, which
+is the argument for returning facts instead of "executed successfully" in one
+line.
+
+**What did not need a change.** The 10 s `COMMAND_TIMEOUT` was a non-issue:
+`cmd.iterate` over 28,000 atoms takes 6--15 ms, so a 500k-atom structure
+extrapolates to ~0.3 s. The cost that does need managing is payload size, which
+both new iterate-based tools handle by aggregating --- `get_representations` on
+`(object, chain, mask)` triples, `inspect_setting` on distinct values --- so the
+result is bounded by the number of groups rather than by the size of the
+structure.
+
+**On `Annotated[CallToolResult, Model]`.** `save_file` returns a plain model.
+The `CallToolResult` indirection exists only because image bytes cannot go in
+`structuredContent`; a saved file has no bytes to return, and copying the shape
+without the reason would be cargo cult.
+
+### Testing: proving a typed path equals the string path
+
+`test_png_export.py` had already established the archetype without naming it:
+drive both argument shapes into the same handler and assert the recorded
+downstream `cmd.*` call is identical. That is now the house pattern for this
+kind of change, at `tests/test_settings.py::TestUnsetScopeEquivalence`.
+
+It only reaches so far, though. A stub `cmd` cannot reproduce setting layers,
+representation bits, or what a `.pse` actually contains, and those are precisely
+the claims these tools rest on. The equivalence classes in
+`tests/test_integration.py` run against a real headless PyMOL: the clearing
+table is executed rather than asserted in prose, `unset` is shown to differ from
+`set ..., 0`, the hardcoded rep-bit table is checked against
+`pymol.viewing.repres`, `get_history` is diffed against the file it reads, and
+`save_file`'s object count is compared with what a fresh PyMOL process finds
+when it reopens the file --- the verification ritual the skill used to ask for
+by hand, now run once in CI.

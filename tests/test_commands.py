@@ -974,3 +974,71 @@ class TestIntrospectionHandlers:
         assert out["count"] == 3
         assert fake.deleted == ["sele", "ebs1", "ibs2"]
         assert fake.deselected is True
+
+
+class TestSaveSelectionDefault:
+    """A bare `all` silently saves an empty session.
+
+    cmd.save's own default is `(all)`, and the parentheses decide whether the
+    word is read as a selection or as an object name. There is no object called
+    "all", so the bare form matches nothing and a .pse comes out as a ~1 kB
+    settings-only file -- saved, and reported as a success. Measured:
+
+        cmd.save(p, "all",   -1)  ->   1011 bytes, no objects
+        cmd.save(p, "(all)", -1)  ->  10506 bytes, both objects
+
+    Coordinate formats are unaffected, which is why this only ever showed up
+    for session files.
+    """
+
+    def _recorder(self):
+        class FakeCmd:
+            def __init__(self):
+                self.saved = []
+
+            def save(self, filename, selection=None, state=None):
+                self.saved.append((filename, selection, state))
+                with open(filename, "wb") as fh:
+                    fh.write(b"stub")
+
+            def get_object_list(self, selection=None):
+                return ["ala"]
+
+            def count_atoms(self, selection=None):
+                return 10
+
+            def count_states(self, selection=None):
+                return 1
+
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+
+        return FakeCmd()
+
+    def _dispatch(self, cmd):
+        return load_plugin("plugin_save_default").build_command_dispatcher(cmd)
+
+    def test_an_absent_selection_becomes_parenthesised_all(self, tmp_path):
+        cmd = self._recorder()
+        self._dispatch(cmd)["save"]({"filename": str(tmp_path / "s.pse")})
+        assert cmd.saved == [(str(tmp_path / "s.pse"), "(all)", -1)]
+
+    def test_an_explicit_bare_all_is_normalised_too(self, tmp_path):
+        """Nobody means "the object named all", and the server sends this."""
+        cmd = self._recorder()
+        self._dispatch(cmd)["save"](
+            {"filename": str(tmp_path / "s.pse"), "selection": "all"}
+        )
+        assert cmd.saved == [(str(tmp_path / "s.pse"), "(all)", -1)]
+
+    def test_a_real_selection_is_left_alone(self, tmp_path):
+        cmd = self._recorder()
+        self._dispatch(cmd)["save"](
+            {"filename": str(tmp_path / "s.pse"), "selection": "chain A"}
+        )
+        assert cmd.saved == [(str(tmp_path / "s.pse"), "chain A", -1)]
+
+    def test_save_file_uses_the_same_normalisation(self, tmp_path):
+        cmd = self._recorder()
+        self._dispatch(cmd)["save_file"]({"filename": str(tmp_path / "s.pdb")})
+        assert cmd.saved[0][1] == "(all)"

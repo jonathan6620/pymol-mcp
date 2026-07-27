@@ -134,3 +134,144 @@ class TestCommandHistory:
         )
 
         assert plugin._history_broken is True
+
+
+class TestReadingTheHistoryBack:
+    """`get_history` against the file it reads.
+
+    The equivalence claim: the tool answers what `tail -20 history.jsonl`,
+    `grep '"ok": false'` and `grep '"command": "load"'` answered, without
+    needing a shell on the machine PyMOL is running on. Each test compares the
+    handler's output against the same filtering done by hand over the file.
+    """
+
+    @staticmethod
+    def _plugin(monkeypatch, setting, name="plugin_history_read"):
+        monkeypatch.setenv("PYMOL_MCP_HISTORY", str(setting))
+        return load_plugin(name)
+
+    @staticmethod
+    def _by_hand(tmp_path):
+        text = (tmp_path / "history.jsonl").read_text()
+        return [json.loads(line) for line in text.splitlines() if line]
+
+    def _write(self, plugin, count=5):
+        for i in range(count):
+            ok = i % 2 == 0
+            plugin._record_history(
+                "load" if ok else "show",
+                {"filename": "/tmp/f%d.pdb" % i} if ok else {},
+                "load /tmp/f%d.pdb" % i if ok else "show cartoon",
+                {"executed": ok} if ok else {"executed": False, "error": "boom"},
+            )
+
+    def test_entries_match_reading_the_file_by_hand(self, tmp_path, monkeypatch):
+        plugin = self._plugin(monkeypatch, tmp_path)
+        self._write(plugin)
+        out = plugin.build_command_dispatcher(object())["get_history"]({"limit": 20})
+        assert out["entries"] == self._by_hand(tmp_path)
+        assert out["enabled"] is True
+        assert out["directory"] == str(tmp_path)
+
+    def test_limit_returns_the_tail(self, tmp_path, monkeypatch):
+        plugin = self._plugin(monkeypatch, tmp_path)
+        self._write(plugin, count=10)
+        out = plugin.build_command_dispatcher(object())["get_history"]({"limit": 3})
+        assert out["entries"] == self._by_hand(tmp_path)[-3:]
+        assert out["total"] == 10
+        assert out["truncated"] is True
+
+    def test_failed_only_matches_grepping_for_ok_false(self, tmp_path, monkeypatch):
+        plugin = self._plugin(monkeypatch, tmp_path)
+        self._write(plugin)
+        out = plugin.build_command_dispatcher(object())["get_history"](
+            {"failed_only": True}
+        )
+        assert out["entries"] == [
+            r for r in self._by_hand(tmp_path) if r["ok"] is False
+        ]
+        assert out["entries"]
+
+    def test_command_filter_matches_grepping_for_that_command(
+        self, tmp_path, monkeypatch
+    ):
+        plugin = self._plugin(monkeypatch, tmp_path)
+        self._write(plugin)
+        out = plugin.build_command_dispatcher(object())["get_history"](
+            {"command": "load"}
+        )
+        assert out["entries"] == [
+            r for r in self._by_hand(tmp_path) if r.get("command") == "load"
+        ]
+        # This is what answers "where did that file go" -- absolute, even
+        # though the recorded source used whatever the caller typed.
+        assert out["entries"][0]["file"]["path"].startswith("/")
+
+    def test_filters_apply_before_the_limit(self, tmp_path, monkeypatch):
+        """`limit` must mean "last N matching", as `grep ... | tail -N` does.
+
+        Applying the limit first would return the tail of everything and then
+        filter it, so a `command="load"` search could come back empty purely
+        because recent traffic was something else.
+        """
+        plugin = self._plugin(monkeypatch, tmp_path)
+        plugin._record_history("load", {}, "load a.pdb", {"executed": True})
+        for i in range(30):
+            plugin._record_history("show", {}, "show cartoon", {"executed": True})
+        out = plugin.build_command_dispatcher(object())["get_history"](
+            {"command": "load", "limit": 5}
+        )
+        assert [r["source"] for r in out["entries"]] == ["load a.pdb"]
+
+    def test_a_truncated_final_record_is_skipped_not_fatal(
+        self, tmp_path, monkeypatch
+    ):
+        """A half-written line is what a crash leaves, and recovery is when
+        this gets read."""
+        plugin = self._plugin(monkeypatch, tmp_path)
+        self._write(plugin, count=2)
+        with open(tmp_path / "history.jsonl", "a") as fh:
+            fh.write('{"ts": "2026-01-01T00:00:00", "comm')
+        out = plugin.build_command_dispatcher(object())["get_history"]({})
+        assert len(out["entries"]) == 2
+
+    def test_reading_does_not_create_a_session_script(self, tmp_path, monkeypatch):
+        """The reader must not have the writer's side effects.
+
+        _history_paths writes a session-*.pml header as soon as it is called,
+        so a reader built on it would fabricate a replay script in a PyMOL that
+        had run nothing.
+        """
+        plugin = self._plugin(monkeypatch, tmp_path)
+        plugin.build_command_dispatcher(object())["get_history"]({})
+        assert list(tmp_path.glob("session-*.pml")) == []
+        assert not (tmp_path / "history.jsonl").exists()
+
+    def test_reading_the_history_is_not_itself_recorded(self, tmp_path, monkeypatch):
+        """Otherwise every poll pushes what you are looking for further away."""
+        plugin = self._plugin(monkeypatch, tmp_path)
+        self._write(plugin, count=2)
+        plugin._record_history("get_history", {}, "get_history", {"executed": True})
+        assert [r["command"] for r in self._by_hand(tmp_path)] == ["load", "show"]
+
+    def test_history_switched_off_reports_disabled_rather_than_raising(
+        self, tmp_path, monkeypatch
+    ):
+        plugin = self._plugin(monkeypatch, "off", name="plugin_history_off")
+        out = plugin.build_command_dispatcher(object())["get_history"]({})
+        assert out == {
+            "enabled": False,
+            "directory": None,
+            "script": None,
+            "entries": [],
+            "total": 0,
+            "truncated": False,
+        }
+
+    def test_a_missing_history_file_is_empty_not_an_error(
+        self, tmp_path, monkeypatch
+    ):
+        plugin = self._plugin(monkeypatch, tmp_path / "nothing-here")
+        out = plugin.build_command_dispatcher(object())["get_history"]({})
+        assert out["enabled"] is True
+        assert out["entries"] == []
