@@ -39,14 +39,31 @@ desktop, and they may have closed it deliberately or be running it elsewhere.
 
 ### Launching it
 
-Prefer the user's own launcher, which already has the flags right:
+Launching PyMOL is a visible desktop action. After the user approves it, prefer
+the typed `launch_pymol` tool. The MCP server owns the child process, waits for
+the socket listener, and returns the new instance port. This works in managed
+command environments that reap children of a disposable shell.
+
+If the typed tool is unavailable, first check for the user's own launcher:
 
 ```bash
-type pymolq >/dev/null 2>&1 && pymolq
+type pymolq
 ```
 
 `pymolq` may be a shell function rather than an alias, so `type` is the
-reliable test. Failing that:
+reliable test. Do not suppress this check's error and mistake a background
+shell's status for a successful launch.
+
+In a managed command runner, start the resolved executable **in the foreground**
+and let the runner yield a persistent session ID:
+
+```bash
+/full/path/to/pymol -q
+```
+
+Do not append `&`: disposable execution shells commonly reap their background
+process group as soon as the shell returns. A TTY is not required. In an
+ordinary user-owned terminal, the traditional platform launchers remain valid:
 
 | Platform | Command |
 |---|---|
@@ -56,9 +73,9 @@ reliable test. Failing that:
 
 Three things must be right, and each has bitten someone:
 
-- **Background it.** A foreground `pymol` never returns, so the call blocks
-  until the user closes the window. Even `pymol -h` does this: it opens the GUI
-  instead of printing help.
+- **Keep it owned.** Use `launch_pymol`, a persistent foreground command-runner
+  session, or a user-owned terminal. Even `pymol -h` may open the GUI instead
+  of printing help.
 - **Discard its output.** PyMOL writes to the terminal it was launched from,
   which is the terminal Claude Code is drawing in, and it corrupts the display.
 - **Never pass `-c`.** That is headless, so the user sees nothing, which defeats

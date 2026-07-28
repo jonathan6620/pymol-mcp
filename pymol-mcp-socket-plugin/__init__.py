@@ -20,7 +20,6 @@ import traceback
 from collections import deque
 
 # Global variables
-dialog = None
 socket_server = None
 # Bounded: nothing reads this back, and an unbounded list would grow for the
 # life of the PyMOL process. The on-disk history below is the durable record.
@@ -281,15 +280,6 @@ def _report_listener_death(port, error):
     if error and VERBOSE:
         traceback.print_exc()
     _record_event("listener_died", message)
-
-
-def __init_plugin__(app=None):
-    """
-    Add an entry to the PyMOL "Plugin" menu
-    """
-    from pymol.plugins import addmenuitemqt
-
-    addmenuitemqt("PyMol MCP Socket Plugin", run_plugin_gui)
 
 
 ##############################################################################
@@ -2084,74 +2074,3 @@ class SocketServer:
             self.socket.close()
         self.socket = None
         self.thread = None
-
-
-##############################################################################
-# GUI
-##############################################################################
-
-
-def run_plugin_gui():
-    """
-    Open our custom dialog
-    """
-    global dialog
-
-    if dialog is None:
-        dialog = make_dialog()
-
-    dialog.show()
-
-
-def make_dialog():
-    from pymol.Qt import QtWidgets
-    from pymol.Qt.utils import loadUi
-
-    dialog = QtWidgets.QDialog()
-
-    uifile = os.path.join(os.path.dirname(__file__), "pymol_mcp_plugin.ui")
-    form = loadUi(uifile, dialog)
-
-    # Reflect the current state — the server may already have been started
-    # from `.pymolrc.py` before the dialog was ever opened. is_listening()
-    # asks the server, so the label cannot claim green while nothing is bound.
-    def refresh():
-        if is_listening():
-            form.button_toggle_listening.setText("Stop Listening")
-            update_status_label(form, f"Listening on port {current_port}")
-        else:
-            form.button_toggle_listening.setText("Start Listening")
-            update_status_label(form, "Not listening")
-
-    form.input_port.setValue(current_port)
-    refresh()
-
-    def toggle_listening():
-        if is_listening():
-            stop_socket_server()
-        else:
-            start_socket_server(form.input_port.value())
-        refresh()
-
-    def close_dialog():
-        # Closing the dialog leaves the listener alone. It used to stop it,
-        # so dismissing the window silently ended the session and every
-        # later command failed with "no PyMOL is listening".
-        dialog.close()
-
-    form.button_toggle_listening.clicked.connect(toggle_listening)
-    form.button_close.clicked.connect(close_dialog)
-
-    return dialog
-
-
-def update_status_label(form, text):
-    """Update the status label with the given text"""
-    form.label_status.setText(text)
-
-    if "Not listening" in text:
-        form.label_status.setStyleSheet("color: red;")
-    elif "Listening" in text:
-        form.label_status.setStyleSheet("color: green;")
-    else:
-        form.label_status.setStyleSheet("")

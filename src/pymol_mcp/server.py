@@ -4,11 +4,15 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import struct
+import subprocess
 import tempfile
+import time
 import zlib
 from contextlib import asynccontextmanager
+from glob import glob
 from pathlib import Path
 from typing import Annotated, Any, AsyncIterator, Literal
 
@@ -1053,6 +1057,93 @@ SCAN_TIMEOUT = 0.2
 COMMAND_TIMEOUT = 10.0
 RENDER_TIMEOUT = 300.0
 MAX_RENDER_TIMEOUT = 1800.0
+PYMOL_START_TIMEOUT = 20.0
+
+# Keep server-launched GUI processes owned by a long-lived process. Launching
+# with ``pymol ... &`` from a disposable command-runner shell is unreliable:
+# many runners reap the shell's background process group as soon as the command
+# returns. The handles also let us detect an early PyMOL failure.
+_launched_processes: dict[int, subprocess.Popen[bytes]] = {}
+
+
+def _find_pymol_executable() -> str | None:
+    """Find a real PyMOL executable without accepting a tool-supplied path."""
+    configured = os.environ.get("PYMOL_EXECUTABLE")
+    candidates = [configured, shutil.which("pymol"), shutil.which("pymol.exe")]
+    patterns = [
+        "/opt/homebrew/Caskroom/*/base/envs/*/bin/pymol",
+        "/usr/local/*conda*/envs/*/bin/pymol",
+        "/Applications/PyMOL.app/Contents/bin/pymol",
+    ]
+    candidates.extend(hit for pattern in patterns for hit in glob(pattern))
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return os.path.realpath(candidate)
+    return None
+
+
+def _launch_pymol_process(timeout: float = PYMOL_START_TIMEOUT) -> dict[str, Any]:
+    """Launch one GUI and wait until its socket listener is discoverable."""
+    executable = _find_pymol_executable()
+    if executable is None:
+        raise RuntimeError(
+            "No PyMOL executable found. Install PyMOL or set "
+            "PYMOL_EXECUTABLE in the MCP server environment."
+        )
+
+    before = {instance["port"] for instance in discover_instances()}
+    if len(before) == len(PORT_RANGE):
+        raise RuntimeError(
+            f"Every PyMOL MCP port in {PORT_RANGE.start}-{PORT_RANGE.stop - 1} "
+            "is already occupied."
+        )
+
+    for pid, old_process in list(_launched_processes.items()):
+        if old_process.poll() is not None:
+            _launched_processes.pop(pid, None)
+
+    process = subprocess.Popen(
+        [executable, "-q"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=os.name != "nt",
+    )
+    _launched_processes[process.pid] = process
+
+    deadline = time.monotonic() + max(1.0, min(timeout, 60.0))
+    while time.monotonic() < deadline:
+        returncode = process.poll()
+        if returncode is not None:
+            _launched_processes.pop(process.pid, None)
+            raise RuntimeError(
+                f"PyMOL exited before its MCP listener started "
+                f"(exit status {returncode})."
+            )
+
+        instances = discover_instances()
+        matching_pid = next(
+            (instance for instance in instances if instance.get("pid") == process.pid),
+            None,
+        )
+        if matching_pid is not None:
+            return matching_pid
+
+        # Some platform launchers replace the initial process. A single new
+        # listener is still unambiguous, even when its PID differs.
+        new_instances = [
+            instance for instance in instances if instance["port"] not in before
+        ]
+        if len(new_instances) == 1:
+            return new_instances[0]
+        time.sleep(0.2)
+
+    raise TimeoutError(
+        f"PyMOL pid {process.pid} is running, but no new MCP listener appeared "
+        f"within {timeout:g} seconds. Check that the socket plugin and "
+        "~/.pymolrc.py auto-start block are installed."
+    )
 
 
 def _command_timeout(command: str, args: dict[str, Any]) -> float:
@@ -1268,6 +1359,10 @@ Four rules cover most mistakes:
      inner ones win. `get_setting` reads only the global one, so it cannot
      explain a scene a scoped `set` has altered. Use `inspect_setting` to find
      an override and `unset_setting` to clear one.
+
+`launch_pymol` opens a desktop window. Call it only after the user has clearly
+approved launching PyMOL. It owns the child process and waits for the socket;
+do not substitute a disposable-shell `pymol ... &` launch.
 
 Call `list_commands` for the full command table with exact patterns. Prefer it
 over guessing: unrecognized input is rejected, not interpreted.
@@ -2394,6 +2489,37 @@ def _describe_command(name: str, cmd: CommandDef) -> str:
     if cmd.composite:
         lines.append("  note: composite -- expands to several PyMOL calls")
     return "\n".join(lines)
+
+
+def _launch_pymol(timeout: float = PYMOL_START_TIMEOUT) -> str:
+    """Launch PyMOL and render the structured instance as concise tool text."""
+    try:
+        instance = _launch_pymol_process(timeout)
+    except Exception as error:
+        return f"PyMOL launch failed: {error}"
+
+    objects = (
+        ", ".join(instance["objects"]) if instance["objects"] else "nothing loaded"
+    )
+    pid = f", pid {instance['pid']}" if instance.get("pid") else ""
+    return f"PyMOL started: instance={instance['port']}{pid}: {objects}"
+
+
+@mcp.tool()
+def launch_pymol(ctx: Context, timeout: float = PYMOL_START_TIMEOUT) -> str:
+    """
+    Opens one new PyMOL GUI and waits for its MCP socket listener.
+
+    This causes a visible desktop action, so obtain the user's approval before
+    calling it. The executable is discovered locally (or configured through
+    the server-side PYMOL_EXECUTABLE environment variable); callers cannot
+    supply an executable or arbitrary command-line arguments.
+
+    The MCP server retains the process handle. This is reliable in managed
+    command environments that reap a background `pymol ... &` process when its
+    short-lived shell exits.
+    """
+    return _launch_pymol(timeout)
 
 
 @mcp.tool()
