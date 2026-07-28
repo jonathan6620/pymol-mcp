@@ -262,6 +262,22 @@ Prefer it to the `distance` command, which answers the same question but leaves
 a labelled distance object in the scene that then appears in every subsequent
 render. Reading a number should not change the picture.
 
+**When you *do* want the dashes drawn**, `distance` is the right tool — a figure
+about a hydrogen bond should show it. Then:
+
+```
+distance hb1, <sel1>, <sel2>      # each selection must be comma-free
+color black, hb1                  # colour the object by its name
+hide labels, hb1                  # keep the dash, drop the number
+delete hb1                        # remove both
+```
+
+`hide labels` is the one to reach for when the caption carries the value and the
+number would only clutter the frame. Drawing the *absent* contacts alongside the
+real one is a good way to show a pair is open rather than missing — but they
+crowd the labels fast, so colour the real bond black and the rest `grey60`, and
+be ready to delete them.
+
 ## Always verify by rendering
 
 After any visual change, render and actually look at it. Prefer the typed
@@ -297,6 +313,103 @@ zoom visible
 
 Then render, inspect the image, and only proceed to the expensive publication
 render after the proof has the intended composition.
+
+### A ray render defaults to a *transparent* background
+
+`bg_color white` sets the background's **colour** but not its **opacity**. With
+`ray_opaque_background` left at its default `-1`, a ray render writes RGBA with
+the background at **alpha 0** — white pixels that are fully transparent. The file
+then shows a checkerboard in any viewer that displays transparency, and the user
+reports the render as broken when the scene is fine.
+
+```
+set ray_opaque_background, 1
+```
+
+**You cannot catch this by looking at the returned image.** The MCP image block
+composites onto white, so a transparent background is pixel-identical to an
+opaque one in the tool result — it only appears when the user opens the file.
+Check the bytes instead:
+
+```
+python3 -c "
+from PIL import Image
+im = Image.open('fig.png')
+print(im.mode, im.getpixel((0,0)),
+      im.getchannel('A').getextrema() if im.mode == 'RGBA' else 'no alpha')
+"
+```
+
+`(255, 255, 255, 255)` with alpha extrema `(255, 255)` is a genuinely opaque
+white background. `(255, 255, 255, 0)` is the broken one. Verify this for any
+render you hand over as a deliverable.
+
+### Transparency is dropped in renders larger than the viewport
+
+A ray render **wider than the current viewport silently loses
+`stick_transparency`** — ghosted geometry returns fully opaque, with no error and
+no change to the setting (`inspect_setting` still reports the value).
+
+Verified by holding camera, scene and settings fixed and changing only the size:
+at the viewport's 1200×900 the ghosted residues rendered translucent; at
+2400×1800 and 2800×2100 they were solid. `transparency_mode` is **not** the
+cause — 1 and 3 fail identically. Observed on one Linux/GL build, so re-test
+before relying on the exact threshold elsewhere.
+
+The practical consequence: **a ghosted figure is capped at the viewport
+dimensions.** Raising `viewport` first would lift the cap, but that resizes the
+user's window, so ask rather than doing it mid-session — see the next section.
+Do not chase this as a settings bug; re-applying the transparency appears to fix
+it only because the next proof render is usually back at viewport size.
+
+### Matching one figure to another: crop, then compensate the label size
+
+When a second figure must sit beside a first at the same apparent scale — and
+especially when the user has set the camera themselves, so you cannot `zoom` —
+crop rather than re-frame. Measure both against the white background:
+
+```bash
+python3 -c "
+from PIL import Image, ImageChops
+im = Image.open('fig.png').convert('RGB')
+bbox = ImageChops.difference(im, Image.new('RGB', im.size, (255,255,255))).getbbox()
+W,H = im.size; x0,y0,x1,y1 = bbox
+print('fill w=%.3f h=%.3f' % ((x1-x0)/W, (y1-y0)/H))
+"
+```
+
+Match the **fill fraction**, not the pixel size. Crop the second image to the box
+that reproduces the first's fraction, centred on its content, then resize back to
+the same output dimensions.
+
+**The catch: labels do not survive the upscale unchanged.** `label_size` is in
+screen points, so it does *not* scale with the molecule — a crop-and-upscale of
+1.84× makes the text 1.84× too large relative to the reference figure. Divide
+before rendering:
+
+```
+label_size_for_crop  =  reference_label_size / upscale_factor
+```
+
+32 → 17 at 1.84×. `dash_width` and `label_connector_width` are also in pixels and
+need the same division; stick radius is in Ångströms and does not.
+
+Two practical notes. **Reuse one hard-coded crop box** across iterations rather
+than recomputing it from the content bbox — the labels are part of the content,
+so recomputing shifts the framing every time you retune them. And shrinking the
+font means the labels sit closer to the atoms, so `label_position` usually has to
+grow to keep them off the geometry; expect to tune the two together.
+
+This is a workaround for the viewport cap above, and it costs resolution — the
+result is an upscale, visibly softer on glyphs. Say so when handing it over.
+
+### Global settings that outlive the figure you set them for
+
+`ray_trace_mode` is **global**. Set it to 1 for one outlined figure and every
+later render in the session inherits outlines. Same for `use_shaders`,
+`transparency_mode`, `ray_opaque_background` and the `label_*` family. Reset
+explicitly when you are done rather than relying on a restart, and prefer a
+scoped `set ..., <selection>` where the setting supports one.
 
 ### Set the viewport once — it resizes the user's window
 
@@ -361,6 +474,16 @@ had been hidden came back; sphere representations vanished; ions that had been
 hidden reappeared. Do not assume a command you ran two calls ago still holds —
 if it matters, re-run it or re-render.
 
+**But drift cuts both ways: sometimes the moved camera is the deliverable.** When
+the user says "use my view" or "keep my orientation", they have framed it in the
+GUI and every `orient`, `zoom`, `turn` or `reset` you issue destroys it — there is
+no undo, and you cannot reconstruct it because you never saw it. From then on,
+render with no camera command at all, and adjust framing by cropping the image
+instead (see the crop-to-match section above).
+
+Capture it immediately with `get_view` so a later restart or accidental `orient`
+is recoverable via `set_view`. Doing this *after* framing and *before* the first
+render is cheap insurance; not doing it cost a good composition in one session.
 ### When the render comes back blank
 
 An all-background image has two very different causes, and there is no way to
@@ -884,10 +1007,43 @@ set label_color, white        # black background
 
 For clustered labels:
 ```
-set label_position, (3,3,3)
+set label_position, -5 -5 5     # spaces, NOT (-5,-5,5) -- see below
 set label_connector, on
+set label_connector_color, grey40
 set label_outline_color, white
 ```
+
+### Float3 settings need spaces, not commas
+
+`set` matches `^set\s+([\w.]+)(?:\s*,\s*([^,]+))?(?:\s*,\s*(.+))?$`, and the
+**value group forbids commas**. So the usual PyMOL form fails:
+
+```
+set label_position, (3,3,3)     # could not convert string to float: '(3'
+set label_position, 2 2 2       # works
+```
+
+Confirm with `inspect_setting label_position`, which reports back
+`[ 2.00000, 2.00000, 2.00000 ]`. The same applies to any float3 setting.
+
+Two limits worth knowing before you promise a layout. `label_position` is
+**global** — every label shifts by the same vector, so labels cannot be placed
+individually from here; that is a GUI drag. And the offset is in **model**
+coordinates, not screen, so which direction clears the frame depends on the
+current camera and is found by trial: `4 4 4` and `-5 -5 5` push opposite ways.
+
+### The label expression accepts string literals
+
+`resn+resi` on a DNA residue gives `DG-6`, which reads badly in a figure. The
+natural fix `resn[1:]+resi` is **rejected** — the expression allowlist forbids
+subscripting. A literal is accepted:
+
+```
+label bac and chain C and resi 291 and name C1', "C291 RNA"
+```
+
+The parser splits on the first comma only, so the literal may itself contain
+commas.
 
 ## Animations
 
