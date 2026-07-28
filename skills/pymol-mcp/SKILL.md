@@ -154,6 +154,45 @@ number. If the user says "the ubiquitin one", match it against the object names.
 failing to bind. But it is still a real window on someone's desktop, so ask, and
 check `list_instances` first in case the one they want already exists.
 
+### Agents share an instance — partition by port before you start
+
+**Every agent that talks to this server hits the same port by default.** A
+subagent, a background task, and the main session all connect to the one PyMOL,
+and none of them can see that the others exist. They will silently overwrite each
+other's representations, colours, camera and objects.
+
+The symptom is alarming and easy to misdiagnose: a render comes back showing a
+**completely different figure** — one you built ten calls ago, or one you never
+built at all — with no error anywhere. In one session a finished domain overlay
+rendered as an unrelated base-pair close-up, and the first instinct was to blame
+the user's GUI. It was another agent driving the same port.
+
+Tells that it is port sharing rather than the user:
+
+- `list_instances` reports **objects you never created** — a stray `hb1`/`hb2`
+  distance object, an object under a name you did not choose.
+- Representations revert wholesale to an **earlier** state of your own work,
+  which a user click cannot easily do but a replayed setup batch can.
+- Settings you just set read back correct from `inspect_setting` while the render
+  disagrees.
+
+The fix is to take your own window and never omit the port again:
+
+```
+# launch a second PyMOL, then find the new port
+list_instances                      # 9876 = shared, 9877 = yours
+```
+
+Then pass `instance=9877` on **every** call — `parse_and_execute`,
+`execute_batch`, `render_png`, the typed tools, all of them. Two instances make
+omission an error rather than a silent guess, which is a feature here.
+
+**Do this at the start whenever background agents are in play**, not after the
+first corrupted render. Reloading and rebuilding a scene is cheap; not noticing
+is what costs you, because a mislabelled figure can reach disk before you look at
+it. Verify any figure you have already written out after discovering a shared
+port — one had to be overwritten in the session that produced this note.
+
 ### Never kill a PID you have not matched against `list_instances`
 
 Killing "the instance I just launched" from a `ps` listing is how you close the
