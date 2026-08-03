@@ -36,6 +36,8 @@ endif
 export UV_FROZEN := 1
 
 FORCE ?=
+SKILL_DIRS := $(patsubst %/,%,$(dir $(wildcard $(CURDIR)/skills/*/SKILL.md)))
+SKILL_DESTS := $(HOME)/.codex/skills $(HOME)/.claude/skills
 
 .PHONY: help install install-plugin install-pymolrc install-skill install-mcp \
         test test-integration test-install lint typecheck validate
@@ -92,7 +94,27 @@ install-pymolrc:
 	uv run python scripts/install_pymolrc.py $(if $(FORCE),--force,)
 
 install-skill:
-	uv run python scripts/install_skill.py
+	@set -eu; \
+	for skill_src in $(SKILL_DIRS); do \
+	  skill_name="$${skill_src##*/}"; \
+	  for dest in $(SKILL_DESTS); do \
+	    link="$$dest/$$skill_name"; \
+	    mkdir -p "$$dest"; \
+	    if [ -e "$$link" ] && [ ! -L "$$link" ]; then \
+	      backup_root="$$(dirname "$$dest")/skill-backups"; \
+	      mkdir -p "$$backup_root"; \
+	      backup="$$backup_root/$$skill_name-$$(date +%Y%m%d-%H%M%S)"; \
+	      mv "$$link" "$$backup"; \
+	      echo "backed up $$link to $$backup"; \
+	    fi; \
+	    ln -sfn "$$skill_src" "$$link"; \
+	    if head -3 "$$link/SKILL.md" | grep -q "^name: $$skill_name$$"; then \
+	      echo "ok $$link -> $$skill_src"; \
+	    else \
+	      echo "FAILED $$link"; exit 1; \
+	    fi; \
+	  done; \
+	done
 
 install-mcp:
 	uv run python scripts/install_mcp.py $(if $(SKIP_CLIENTS),--skip-clients,)

@@ -319,7 +319,7 @@ its own:
 make install-skill
 ```
 
-It goes into both `~/.claude/skills/` and Codex's `~/.agents/skills/`, so it
+It goes into both `~/.claude/skills/` and Codex's `~/.codex/skills/`, so it
 applies in any project directory. Start a new client session afterwards.
 
 ### Session history
