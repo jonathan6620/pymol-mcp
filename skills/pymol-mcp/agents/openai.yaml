@@ -1,0 +1,4 @@
+interface:
+  display_name: "PyMOL MCP"
+  short_description: "Drive and verify PyMOL through MCP tools"
+  default_prompt: "Use $pymol-mcp to inspect, modify, render, and verify this molecular structure in PyMOL."
