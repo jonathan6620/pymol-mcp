@@ -683,6 +683,35 @@ to print while recolouring, then undoing its colours. It also reports gaps,
 which no command could previously reveal -- a nicked chain is still one chain,
 and the break shows up only in the numbering.
 
+### A coordinate gap is not automatically a sequence deletion
+
+Treat gaps reported by `get_chains` or `get_gaps` as **missing coordinates**.
+Experimental and hybrid structure files commonly omit flexible or disordered
+residues that are present in the biological sequence; an atom-only mmCIF may
+also omit the `_entity_poly` or `_pdbx_poly_seq_scheme` records needed to expose
+that full sequence. Therefore do not call a gap an indel, truncation, cleavage,
+or chain break from `_atom_site` records alone.
+
+Before interpreting a gap:
+
+- compare the coordinate sequence with SEQRES, `_entity_poly`,
+  `_pdbx_poly_seq_scheme`, a supplied FASTA, or an authoritative database
+  sequence;
+- report both numbering frames when coordinate labels and full-sequence
+  positions differ;
+- use disorder predictions, local confidence and an ensemble of models to test
+  whether the absent segment is flexible; coordinate absence alone is not proof
+  of disorder;
+- exclude the gap and any mobile attached domain from structural alignments
+  intended to measure conservation, and align on a stable shared core;
+- use `set cartoon_gap_cutoff, 0` to prevent a cartoon from drawing a false rod
+  across the gap. This changes the rendering, not the molecular interpretation.
+
+Phrase the generic result as “unmodelled residues” until the sequence and
+flexibility evidence establish more. Some project-specific structures do have
+missing segments that are demonstrably disordered; their domain skill should
+state that stronger conclusion explicitly.
+
 **The `kind` field can be wrong. Do not branch on it.** On PDB entry `4faq`,
 which RCSB records as nucleic-acid-only, `get_chains` reports chain A as
 `kind: "protein"`. Counting settles it:
