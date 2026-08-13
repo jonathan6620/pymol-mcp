@@ -165,6 +165,17 @@ class TestPydanticModels:
         )
         assert req.model_dump(exclude_none=True)["source"] == "show sticks"
 
+    def test_socket_request_keeps_audit_and_replay_separate(self):
+        req = SocketRequest(
+            command="show",
+            args={"representation": "sticks"},
+            source="typed apply(show)",
+            replay="show sticks, all",
+        )
+        data = req.model_dump(exclude_none=True)
+        assert data["source"] == "typed apply(show)"
+        assert data["replay"] == "show sticks, all"
+
     def test_socket_request_default_type(self):
         req = SocketRequest(command="fetch", args={"code": "1ubq"})
         assert req.type == "structured_command"

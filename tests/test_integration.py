@@ -14,12 +14,14 @@ Skipped automatically when no PyMOL executable can be found.
 """
 
 import glob
+import hashlib
 import json
 import os
 import shutil
 import socket
 import subprocess
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -109,13 +111,15 @@ class Instance:
             time.sleep(0.2)
         raise AssertionError(f"PyMOL did not start listening:\n{logpath.read_text()}")
 
-    def send(self, command, args, source="test"):
+    def send(self, command, args, source="test", replay=None):
         payload = {
             "type": "structured_command",
             "command": command,
             "args": args,
             "source": source,
         }
+        if replay is not None:
+            payload["replay"] = replay
         with socket.create_connection(("localhost", self.port), timeout=15) as sock:
             sock.sendall((json.dumps(payload) + "\n").encode())
             return json.loads(sock.makefile().readline())
@@ -646,6 +650,94 @@ class TestHistoryEquivalence:
 
         out = inst.send("get_history", {}, source="get_history")["result"]["data"]
         assert [e.get("command") for e in out["entries"]] == ["fragment"]
+
+    def test_replay_script_rebuilds_state_in_a_fresh_pymol(
+        self, instances, tmp_path_factory
+    ):
+        inst = _one_instance(instances)
+        inst.send(
+            "fragment", {"name": "ala"}, source="typed fixture", replay="fragment ala"
+        )
+        inst.send(
+            "select",
+            {"name": "temporary", "selection": "ala"},
+            source="typed fixture",
+            replay="select temporary, ala",
+        )
+        inst.send(
+            "clear_selections",
+            {},
+            source="typed fixture",
+            replay="clear_selections",
+        )
+        inst.send(
+            "color",
+            {"color": "red", "selection": "ala"},
+            source="typed fixture",
+            replay="color red, ala",
+        )
+
+        history = inst.send("get_history", {})["result"]["data"]
+        replay = Path(history["script"])
+        assert replay.exists()
+
+        workdir = tmp_path_factory.mktemp("replay")
+        verify = workdir / "verify_replay.py"
+        verify.write_text(
+            "from pymol import cmd\n"
+            "cmd.fragment('gly', 'inherited_junk')\n"
+            f"cmd.do('@{replay}')\n"
+            "print('OBJECTS=' + ','.join(sorted(cmd.get_object_list('all'))))\n"
+            "print('SELECTIONS=' + ','.join(cmd.get_names('selections')))\n"
+            "print('RED=%d' % cmd.count_atoms('ala and color red'))\n"
+        )
+        proc = subprocess.run(
+            [PYMOL, "-cq", str(verify)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "OBJECTS=ala" in proc.stdout
+        assert "SELECTIONS=" in proc.stdout
+        assert "RED=10" in proc.stdout
+
+    def test_session_export_is_a_self_contained_verified_zip(
+        self, instances, tmp_path_factory
+    ):
+        inst = _one_instance(instances)
+        inst.send(
+            "fragment", {"name": "ala"}, source="fixture", replay="fragment ala"
+        )
+        inst.send(
+            "show",
+            {"representation": "cartoon", "selection": "ala"},
+            source="fixture",
+            replay="show cartoon, ala",
+        )
+        target = tmp_path_factory.mktemp("session_export") / "session.zip"
+
+        reply = inst.send(
+            "export_session",
+            {"filename": str(target), "redact_paths": False},
+            source="typed export_session",
+        )
+
+        assert reply["status"] == "success", reply
+        meta = reply["result"]["data"]
+        assert meta["path"] == str(target)
+        assert meta["sha256"] == hashlib.sha256(target.read_bytes()).hexdigest()
+        assert meta["current_scene"] is True
+        with zipfile.ZipFile(target) as archive:
+            assert sorted(archive.namelist()) == meta["files"]
+            manifest = json.loads(archive.read("manifest.json"))
+            final = json.loads(archive.read("final-state.json"))
+            replay = archive.read("replay.pml").decode()
+        assert manifest["session_id"] == meta["session_id"]
+        assert [item["name"] for item in final["objects"]] == ["ala"]
+        assert final["representations"]["atoms"] == 10
+        assert "reinitialize" in replay
+        assert "fragment ala" in replay
 
 
 @requires_pymol

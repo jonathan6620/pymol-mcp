@@ -329,13 +329,13 @@ closing. Two files in `~/.pymol-mcp/`:
 
 | File | Contents |
 |---|---|
-| `history.jsonl` | Every command with its arguments, outcome, and any error |
-| `session-<timestamp>.pml` | The successful commands only, as PyMOL syntax |
+| `history.jsonl` | Every MCP command with its arguments, outcome, and any error |
+| `session-<timestamp>-<pid>.pml` | Validated state-changing commands, replayed from a clean state |
 
 Replay a session, or reuse it as a figure script:
 
 ```bash
-pymol -r ~/.pymol-mcp/session-20260722-114646.pml
+pymol -r ~/.pymol-mcp/session-20260722-114646-43120.pml
 ```
 
 `load`, `save`, and `png` also record the absolute path they touched, since
@@ -343,6 +343,34 @@ PyMOL resolves a relative path against its own working directory.
 
 The `get_history` tool reads all of this back without needing shell access to
 the machine PyMOL is running on, filtered by command or to failures only.
+
+Audit provenance and replay syntax are separate. Each JSONL record has a
+`session_id`, `source` describing the MCP call, plus `replay` and `replayable`
+when the call has valid PyMOL syntax. Composite operations may record a list of
+replay lines. The PID in the session filename prevents concurrent PyMOL
+instances from writing the same script. Read-only typed tools remain in the audit log
+but never enter the `.pml`; typed state changes are rendered as real PyMOL
+commands rather than Python dictionary strings. Every replay script starts with
+`reinitialize`, and `load` paths are made absolute in the PyMOL process that
+resolved them.
+
+This deterministically reproduces MCP-controlled state. Changes made directly
+in the GUI are outside the protocol and therefore cannot be replayed.
+
+Export one session for replay, debugging or later workflow analysis with the
+typed `export_session` tool:
+
+```text
+export_session(filename="/path/to/session.zip")
+```
+
+The ZIP contains `manifest.json`, session-filtered `history.jsonl`,
+`replay.pml`, `artifacts.json`, and `final-state.json`. The artifact inventory
+references input and output paths but does not copy molecular structures or
+renders. A live-session export includes object, selection, camera and
+representation evidence; a historical export records that no live-state
+snapshot is available. Use `redact_paths=true` for a shareable analysis bundle.
+Redaction deliberately makes its `replay.pml` non-executable.
 
 Set `PYMOL_MCP_HISTORY=/some/dir` to write elsewhere, or `PYMOL_MCP_HISTORY=off`
 to disable. The variable is read from the environment PyMOL was launched from.

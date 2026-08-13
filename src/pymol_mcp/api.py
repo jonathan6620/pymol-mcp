@@ -340,15 +340,17 @@ class HistoryEntry(BaseModel):
     """
 
     ts: str
+    session_id: str | None = None
     ok: bool = True
     command: str | None = None
     event: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
     source: str | None = None
+    replay: str | list[str] | None = None
     output: str | None = None
     error: str | None = None
     detail: str | None = None
-    replayable: bool = True
+    replayable: bool = False
     file: HistoryFile | None = None
 
 
@@ -365,6 +367,21 @@ class History(BaseModel):
     entries: list[HistoryEntry]
     total: int
     truncated: bool = False
+
+
+class SessionExport(BaseModel):
+    """Portable ZIP containing one session's replay and supporting evidence."""
+
+    path: str
+    bytes: int
+    sha256: str
+    session_id: str
+    entries: int
+    replay_commands: int
+    artifacts: int
+    redacted_paths: bool
+    current_scene: bool
+    files: list[str]
 
 
 class SaveMeta(BaseModel):

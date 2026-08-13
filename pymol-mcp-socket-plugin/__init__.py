@@ -10,13 +10,16 @@ Based on the concept of the "Rendering Plugin" from Michael Lerner.
 from __future__ import absolute_import, print_function
 
 import ast
+import hashlib
 import json
 import math
 import os
 import socket
+import tempfile
 import threading
 import time
 import traceback
+import zipfile
 from collections import deque
 
 # Global variables
@@ -54,9 +57,8 @@ def _log(message):
 #
 #   history.jsonl   every command with its arguments and outcome, for working
 #                   out what went wrong
-#   session-*.pml   the successful commands only, as literal PyMOL syntax, so
-#                   the session can be replayed with `@session-....pml` or
-#                   pasted into a methods section
+#   session-*.pml   validated state-changing commands only, as literal PyMOL
+#                   syntax, replayed from a clean state with `@session-....pml`
 #
 # Set PYMOL_MCP_HISTORY to another directory, or to "off" to disable.
 HISTORY_SETTING = os.environ.get("PYMOL_MCP_HISTORY", "").strip()
@@ -77,7 +79,7 @@ FILE_ARGS = {
 # Commands kept out of the history. Reading the history is not part of the
 # session being recorded, and recording it would mean every poll pushes the
 # commands the caller is looking for further out of reach.
-HISTORY_EXCLUDED = frozenset({"get_history"})
+HISTORY_EXCLUDED = frozenset({"get_history", "export_session"})
 
 # Bit index per representation, mirroring pymol.viewing.repres. The `reps`
 # field in a cmd.iterate namespace is this bitmask.
@@ -153,32 +155,83 @@ def _history_paths():
 
     os.makedirs(directory, exist_ok=True)
 
-    pml = os.path.join(directory, "session-%s.pml" % time.strftime("%Y%m%d-%H%M%S"))
+    session_id = "%s-%s" % (time.strftime("%Y%m%d-%H%M%S"), os.getpid())
+    pml = os.path.join(directory, "session-%s.pml" % session_id)
     with open(pml, "a") as fh:
         fh.write("# pymol-mcp session %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
         # Any relative path below was resolved against this directory, so a
         # replay from elsewhere needs it.
         fh.write("# PyMOL working directory: %s\n" % os.getcwd())
         fh.write("# Replay with:  @%s\n\n" % pml)
+        # A replay must not inherit objects, settings, selections or a camera
+        # from whichever PyMOL window happens to execute it.
+        fh.write("reinitialize\n")
 
     _history_dir, _history_pml = directory, pml
     _log("Recording command history to %s" % directory)
     return _history_dir, _history_pml
 
 
-def _replay_source(command_name, source):
-    """Return a safe one-line replay command, or None for untrusted source."""
-    if not isinstance(source, str):
+def _replay_source(command_name, replay, args):
+    """Return validated, canonical replay syntax or None.
+
+    Audit provenance and replay syntax are separate protocol fields. Deriving
+    one from the other made typed calls such as ``count {'selection': 'all'}``
+    look replayable even though that is not PyMOL command syntax.
+    """
+    if not isinstance(replay, str):
         return None
-    source = source.strip()
-    if not source or not source.isprintable() or ";" in source or source.endswith("\\"):
+    replay = replay.strip()
+    if not replay or not replay.isprintable() or ";" in replay or replay.endswith("\\"):
         return None
-    if source.split(None, 1)[0].lower() != command_name.lower():
+    expected = "save" if command_name == "save_file" else command_name.lower()
+    if replay.split(None, 1)[0].lower() != expected:
         return None
-    return source
+
+    # Input paths are resolved by the PyMOL process, not the MCP server. Make
+    # loads independent of the directory from which a later replay is run.
+    if command_name == "load":
+        filename = args.get("filename")
+        if filename:
+            replay = "load %s" % os.path.abspath(os.path.expanduser(str(filename)))
+            if args.get("object"):
+                replay += ", %s" % args["object"]
+            if args.get("options"):
+                replay += ", %s" % args["options"]
+    elif command_name == "save":
+        filename = os.path.abspath(os.path.expanduser(str(args["filename"])))
+        selection = args.get("selection") or "(all)"
+        if selection == "all":
+            selection = "(all)"
+        replay = "save %s, %s, %s" % (
+            filename,
+            selection,
+            args.get("state", -1),
+        )
+    elif command_name == "png":
+        # Typed rendering executes against an atomic temporary path but sends
+        # the final deliverable path in replay. Canonicalise that path rather
+        # than the executed filename from args.
+        command, separator, options = replay.partition(",")
+        filename = command[len("png ") :].strip()
+        replay = "png %s" % os.path.abspath(os.path.expanduser(filename))
+        if separator:
+            replay += "," + options
+    elif command_name == "set_view":
+        view = _parse_view(args.get("view"))
+        replay = "set_view (%s)" % ",".join(str(float(item)) for item in view)
+    elif command_name == "save_file":
+        filename = os.path.abspath(os.path.expanduser(str(args["filename"])))
+        selection = args.get("selection") or "(all)"
+        replay = "save %s, %s, %s" % (
+            filename,
+            selection,
+            args.get("state", -1),
+        )
+    return replay
 
 
-def _record_history(command_name, args, source, result):
+def _record_history(command_name, args, source, result, replay=None):
     """Append one command to the history files.
 
     Never raises. A history write failing must not stop PyMOL executing
@@ -199,16 +252,28 @@ def _record_history(command_name, args, source, result):
                 return
 
             ok = not (isinstance(result, dict) and result.get("executed") is False)
-            replay_source = _replay_source(command_name, source)
+            if command_name == "clear_selections" and replay == "clear_selections":
+                data = result.get("data", {}) if isinstance(result, dict) else {}
+                replay_sources = [
+                    "delete %s" % name for name in data.get("deleted", [])
+                ]
+                replay_sources.append("deselect")
+            else:
+                validated = _replay_source(command_name, replay, args)
+                replay_sources = [validated] if validated is not None else []
             record = {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "session_id": os.path.basename(pml)[len("session-") : -len(".pml")],
                 "command": command_name,
                 "args": args,
                 "source": source,
                 "ok": ok,
+                "replayable": bool(replay_sources),
             }
-            if replay_source is None:
-                record["replayable"] = False
+            if replay_sources:
+                record["replay"] = (
+                    replay_sources[0] if len(replay_sources) == 1 else replay_sources
+                )
             if isinstance(result, dict):
                 detail = result.get("error") if not ok else result.get("output")
                 if detail:
@@ -219,6 +284,8 @@ def _record_history(command_name, args, source, result):
             if spec:
                 arg_name, direction = spec
                 path = args.get(arg_name)
+                if command_name == "png" and replay_sources:
+                    path = replay_sources[0].partition(",")[0][len("png ") :]
                 if path:
                     record["file"] = {
                         "path": os.path.abspath(os.path.expanduser(str(path))),
@@ -229,9 +296,10 @@ def _record_history(command_name, args, source, result):
                 fh.write(json.dumps(record) + "\n")
 
             # A failed command would not replay, so keep the script clean.
-            if ok and replay_source is not None:
+            if ok and replay_sources:
                 with open(pml, "a") as fh:
-                    fh.write(replay_source + "\n")
+                    for replay_source in replay_sources:
+                        fh.write(replay_source + "\n")
     except Exception as e:
         _history_broken = True
         _log("Command history disabled after a write error: %s" % e)
@@ -245,11 +313,12 @@ def _record_event(kind, detail):
         return
     try:
         with _history_lock:
-            directory, _ = _history_paths()
+            directory, pml = _history_paths()
             if directory is None:
                 return
             record = {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "session_id": os.path.basename(pml)[len("session-") : -len(".pml")],
                 "event": kind,
                 "detail": detail,
                 "ok": False,
@@ -1671,6 +1740,220 @@ def build_command_dispatcher(cmd):
             "truncated": total > len(kept),
         }
 
+    def _export_session(args):
+        """Write one session's audit, replay and final-state evidence to ZIP."""
+        directory = _history_directory()
+        if directory is None:
+            raise ValueError("session history is disabled")
+
+        filename = args.get("filename", "")
+        if not filename:
+            raise ValueError("export_session requires a .zip filename")
+        _reject_control_characters(filename)
+        target = os.path.abspath(os.path.expanduser(str(filename)))
+        if not target.lower().endswith(".zip"):
+            raise ValueError("export_session requires a .zip filename")
+
+        current_script = _history_pml
+        current_id = None
+        if current_script:
+            base = os.path.basename(current_script)
+            current_id = base[len("session-") : -len(".pml")]
+        session_id = args.get("session_id") or current_id
+        if not session_id:
+            raise ValueError("this PyMOL has no recorded session to export")
+        session_id = str(session_id)
+        if (
+            not session_id
+            or ".." in session_id
+            or not all(ch.isalnum() or ch in "._-" for ch in session_id)
+        ):
+            raise ValueError("invalid session_id")
+
+        records = []
+        history_path = os.path.join(directory, "history.jsonl")
+        try:
+            with open(history_path) as fh:
+                for line in fh:
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if (
+                        isinstance(record, dict)
+                        and record.get("session_id") == session_id
+                    ):
+                        records.append(record)
+        except OSError:
+            pass
+        if not records:
+            raise ValueError("no history records found for session_id %s" % session_id)
+
+        replay_path = os.path.join(directory, "session-%s.pml" % session_id)
+        try:
+            with open(replay_path) as fh:
+                replay_text = fh.read()
+        except OSError:
+            replay_text = ""
+
+        artifacts = [
+            {
+                "ts": record.get("ts"),
+                "command": record.get("command"),
+                "direction": record["file"].get("direction"),
+                "path": record["file"].get("path"),
+            }
+            for record in records
+            if isinstance(record.get("file"), dict)
+        ]
+
+        redacted = bool(args.get("redact_paths", False))
+        replacements = {}
+        if redacted:
+            paths = {
+                str(item["path"])
+                for item in artifacts
+                if item.get("path")
+            }
+            paths.update(
+                path
+                for path in (directory, os.getcwd(), os.path.expanduser("~"))
+                if path
+            )
+            for index, path in enumerate(sorted(paths, key=len, reverse=True), 1):
+                replacements[path] = "<PATH_%03d>" % index
+
+        def redact(value):
+            if isinstance(value, dict):
+                return {key: redact(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, str):
+                for original, replacement in replacements.items():
+                    value = value.replace(original, replacement)
+            return value
+
+        current_scene = current_id == session_id
+        final_state = {
+            "available": current_scene,
+            "reason": None if current_scene else "historical session is not live",
+        }
+        if current_scene:
+            enabled = set(cmd.get_names("objects", enabled_only=1))
+            objects = []
+            for name in sorted(cmd.get_object_list("all")):
+                try:
+                    object_type = cmd.get_type(name)
+                except Exception:
+                    object_type = None
+                objects.append(
+                    {
+                        "name": name,
+                        "type": object_type,
+                        "atoms": int(cmd.count_atoms(name)),
+                        "states": int(cmd.count_states(name)),
+                        "enabled": name in enabled,
+                    }
+                )
+            try:
+                representations = _get_representations({"selection": "all"})
+            except Exception:
+                representations = None
+            final_state.update(
+                {
+                    "objects": objects,
+                    "selections": sorted(cmd.get_names("selections")),
+                    "view": [float(item) for item in cmd.get_view()],
+                    "representations": representations,
+                }
+            )
+
+        try:
+            version = cmd.get_version()
+        except Exception:
+            version = None
+        replay_commands = sum(
+            len(record["replay"])
+            if isinstance(record.get("replay"), list)
+            else int(bool(record.get("replay")))
+            for record in records
+            if record.get("ok", True)
+        )
+        payloads = {
+            "history.jsonl": "".join(
+                json.dumps(redact(record), sort_keys=True) + "\n"
+                for record in records
+            ),
+            "replay.pml": redact(replay_text),
+            "final-state.json": json.dumps(
+                redact(final_state), indent=2, sort_keys=True, default=str
+            )
+            + "\n",
+            "artifacts.json": json.dumps(
+                redact(artifacts), indent=2, sort_keys=True, default=str
+            )
+            + "\n",
+        }
+        manifest = {
+            "schema_version": 1,
+            "session_id": session_id,
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "entries": len(records),
+            "failed_entries": sum(not record.get("ok", True) for record in records),
+            "replay_commands": replay_commands,
+            "replay_available": bool(replay_text),
+            "replay_redacted": redacted,
+            "redacted_paths": redacted,
+            "current_scene": current_scene,
+            "artifacts": len(artifacts),
+            "pymol": {
+                "pid": os.getpid(),
+                "port": current_port,
+                "version": version,
+            },
+            "files": sorted(["manifest.json"] + list(payloads)),
+        }
+        payloads["manifest.json"] = json.dumps(
+            manifest, indent=2, sort_keys=True, default=str
+        ) + "\n"
+
+        parent = os.path.dirname(target)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".pymol-session-", suffix=".zip", dir=parent or None
+        )
+        os.close(descriptor)
+        try:
+            with zipfile.ZipFile(
+                temporary, "w", compression=zipfile.ZIP_DEFLATED
+            ) as archive:
+                for name in sorted(payloads):
+                    archive.writestr(name, payloads[name])
+            os.replace(temporary, target)
+        finally:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+        digest = hashlib.sha256()
+        with open(target, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {
+            "path": target,
+            "bytes": os.path.getsize(target),
+            "sha256": digest.hexdigest(),
+            "session_id": session_id,
+            "entries": len(records),
+            "replay_commands": replay_commands,
+            "artifacts": len(artifacts),
+            "redacted_paths": redacted,
+            "current_scene": current_scene,
+            "files": manifest["files"],
+        }
+
     def _save_file(args):
         """Save, and report what was actually written.
 
@@ -1749,6 +2032,7 @@ def build_command_dispatcher(cmd):
         "get_gaps": _get_gaps,
         "save_file": _save_file,
         "get_history": _get_history,
+        "export_session": _export_session,
         "get_representations": _get_representations,
         "inspect_setting": _inspect_setting,
         "unset": _unset,
@@ -2049,11 +2333,12 @@ class SocketServer:
         cmd_name = command.get("command", "")
         args = command.get("args", {})
         source = command.get("source")
+        replay = command.get("replay")
         received_commands.append(f"{cmd_name} {json.dumps(args)}")
 
         if self.command_callback and cmd_name:
             result = self.command_callback(cmd_name, args)
-            _record_history(cmd_name, args, source, result)
+            _record_history(cmd_name, args, source, result, replay)
             return result
 
     def stop(self):

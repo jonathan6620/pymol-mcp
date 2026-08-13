@@ -1,6 +1,6 @@
 ---
 name: pymol-mcp
-description: Drive PyMOL through the pymol MCP server. Covers the typed tools (get_chains, count, list_residues, contacts, get_gaps, get_secondary_structure, get_sequence, measure, select, apply, clear_selections, inspect_setting, unset_setting, get_representations, get_history, save_file, render_png, render_movie) and when to prefer them over selection strings, starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax and its silent traps, distinguishing missing coordinates and disordered segments from biological deletions, splitting DNA from RNA, labelling, transparency and why a setting can be sticky at three different layers, reading back what was run, saving sessions that actually contain something, rendering stills and animations, and verifying a change by looking at it. Use whenever calling mcp__pymol__* tools, interpreting coordinate gaps, or when a PyMOL tool call fails to connect.
+description: Drive PyMOL through the pymol MCP server. Covers the typed tools (get_chains, count, list_residues, contacts, get_gaps, get_secondary_structure, get_sequence, measure, select, apply, clear_selections, inspect_setting, unset_setting, get_representations, get_history, export_session, save_file, render_png, render_movie) and when to prefer them over selection strings, starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax and its silent traps, distinguishing missing coordinates and disordered segments from biological deletions, splitting DNA from RNA, labelling, transparency and why a setting can be sticky at three different layers, reading back and exporting what was run, saving sessions that actually contain something, rendering stills and animations, and verifying a change by looking at it. Use whenever calling mcp__pymol__* tools, interpreting coordinate gaps, or when a PyMOL tool call fails to connect.
 ---
 
 # Driving PyMOL through the MCP server
@@ -272,6 +272,7 @@ mistake documented further down.
 | `unset_setting` | clear a scoped override, at a layer you choose |
 | `get_representations` | what is currently shown, per object and chain |
 | `get_history` | what was run, what failed, and where files went |
+| `export_session` | one session's replay, audit, artifacts and final-state evidence as ZIP |
 | `save_file` | save, and get back the path, size and object count |
 
 A `Selector` takes `object`, `chain`, `residues`, `residue_range`, `molecule`,

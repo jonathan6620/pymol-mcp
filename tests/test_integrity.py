@@ -248,6 +248,7 @@ class TestServerModuleIntegrity:
             ("get_history", ("entries", "directory", "script")),
             ("get_representations", ("groups", "hidden", "reps")),
             ("save_file", ("path", "bytes", "object_count", "objects_verified")),
+            ("export_session", ("path", "sha256", "session_id", "files")),
         ],
     )
     def test_new_typed_tools_declare_an_output_schema(self, tool, fields):

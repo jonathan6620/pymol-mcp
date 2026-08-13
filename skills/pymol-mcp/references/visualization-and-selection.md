@@ -518,8 +518,8 @@ piece of session state you *can* read back:
 
 | File | Use it for |
 |---|---|
-| `history.jsonl` | What was run, in order, and which commands failed |
-| `session-<timestamp>.pml` | Handing the user a script that rebuilds the figure |
+| `history.jsonl` | Every MCP call, in order, including read-only calls and failures |
+| `session-<timestamp>-<pid>.pml` | Validated state-changing PyMOL syntax, starting from a clean state |
 
 **Read it with `mcp__pymol__get_history`**, not with a shell — the directory is
 only known inside PyMOL, which resolves `PYMOL_MCP_HISTORY` from its own
@@ -527,22 +527,30 @@ environment. `failed_only=True` finds the attempt that did not work;
 `command="load"` finds what was loaded. `limit` counts matching records, so a
 filter never comes back empty just because recent traffic was something else.
 
-Each record has `command`, `args`, `source` (the literal syntax), `ok`, and
-either `output` or `error`. `load`, `save` and `png` also carry a `file` entry
-with the **absolute** path and whether it was read or written, so this answers
-"where did that PNG go" when the original command used a relative path.
+Each record has `session_id`, `command`, `args`, `source` (audit provenance),
+`ok`, `replayable`, and either `output` or `error`. The session ID includes the
+PyMOL PID so concurrent instances cannot collide on one script. A replayable
+record additionally has `replay`, containing validated PyMOL syntax or a list
+of lines for a composite operation. Read-only typed calls
+are useful audit evidence but are deliberately absent from the `.pml`; their
+synthetic descriptions are not PyMOL commands. `load`, `save` and `png` also
+carry a `file` entry with the **absolute** path and whether it was read or
+written, so this answers "where did that PNG go" when the original command used
+a relative path.
 
-The `.pml` is the deliverable when someone asks how a figure was made. It holds
-only the commands that succeeded, so it replays cleanly:
+The `.pml` is the deliverable when someone asks how a figure was made. It starts
+with `reinitialize`, contains only successful commands with explicit replay
+syntax, and makes loaded input paths absolute, so MCP-controlled state replays
+from a clean process without inheriting an existing scene:
 
 ```
-pymol -r ~/.pymol-mcp/session-20260722-114646.pml
+pymol -r ~/.pymol-mcp/session-20260722-114646-43120.pml
 ```
 
 Two caveats. The history is per PyMOL launch, so a restart starts a new `.pml`
 while `history.jsonl` keeps appending. Anything the user did in the GUI is not
-recorded, because it never went through the server, which is another reason a
-replay can diverge from what is on screen.
+recorded, because it never went through the server; deterministic replay covers
+the MCP-controlled state, not unobserved GUI edits.
 
 For a complex figure, keep the successful commands as an ordered reconstruction
 recipe rather than relying on the live window. Include loading, representations,
@@ -552,6 +560,28 @@ the narrow highlight colors they would otherwise overwrite.
 
 Also capture `get_view` after framing. Restoring that 18-value list with
 `set_view` is faster and more exact than repeating `orient` and manual turns.
+
+### Export one session for replay or analysis
+
+Use `mcp__pymol__export_session` when the audit, replay and verification
+evidence need to travel together:
+
+```text
+export_session(filename="/path/to/session.zip")
+```
+
+The ZIP contains a manifest, only that `session_id`'s JSONL records, the replay
+script, an artifact-path inventory and a final-state snapshot. The snapshot
+includes objects, atom/state counts, enabled state, named selections, camera
+and representation evidence when the exported session is still live. An older
+session can be selected explicitly, but its final live state is no longer
+observable.
+
+Inputs, structures, renders and saved sessions are referenced but never copied
+into the archive. Set `redact_paths=true` before sharing it; this replaces paths
+throughout the bundle and marks the replay as redacted, because placeholders
+cannot be executed. Leave redaction off when the bundle must replay locally.
+The returned SHA-256 digest verifies that the exported ZIP has not changed.
 
 ## Recovering a session that was cleared
 

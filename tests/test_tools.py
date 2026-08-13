@@ -70,10 +70,40 @@ def test_execute_batch_can_continue_after_failure(monkeypatch):
     assert "still-runs" in output
 
 
+def test_parsed_effect_supplies_replay_but_read_only_command_does_not():
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        def send_command(
+            self, command, args, source=None, replay=None, timeout=None
+        ):
+            self.calls.append((command, source, replay))
+            return {
+                "status": "success",
+                "result": {"executed": True, "output": "ok"},
+            }
+
+    conn = Connection()
+    server._execute_user_command(None, "show cartoon, chain A", None, conn)
+    server._execute_user_command(None, "get_view", None, conn)
+
+    assert conn.calls[0] == (
+        "show",
+        "show cartoon, chain A",
+        "show cartoon, chain A",
+    )
+    assert conn.calls[1] == ("get_view", "get_view", None)
+
+
 def test_render_png_returns_verified_image(monkeypatch, tmp_path):
     class FakeConnection:
-        def send_command(self, command, args, source=None, timeout=None):
+        def send_command(
+            self, command, args, source=None, replay=None, timeout=None
+        ):
             assert command == "png"
+            assert source == "typed render_png"
+            assert replay.startswith(f"png {tmp_path / 'render.png'},")
             _minimal_png(Path(args["filename"]), args["width"], args["height"])
             return {
                 "status": "success",
@@ -96,7 +126,9 @@ def test_render_png_returns_verified_image(monkeypatch, tmp_path):
 
 def test_render_failure_does_not_accept_or_replace_stale_file(monkeypatch, tmp_path):
     class FailedConnection:
-        def send_command(self, command, args, source=None, timeout=None):
+        def send_command(
+            self, command, args, source=None, replay=None, timeout=None
+        ):
             return {
                 "status": "success",
                 "result": {"executed": True, "output": "0"},
@@ -157,7 +189,7 @@ class _FakeMovieConnection:
         self.commands = []
         self._frame = 0
 
-    def send_command(self, command, args, source=None, timeout=None):
+    def send_command(self, command, args, source=None, replay=None, timeout=None):
         self.commands.append((command, args))
         if command == "png":
             from PIL import Image as PILImage
@@ -268,10 +300,12 @@ def test_render_movie_cleans_up_frame_files(monkeypatch, tmp_path):
 class _RecordingConnection:
     def __init__(self, result=None):
         self.sent = []
+        self.audit = []
         self._result = result or {"executed": True, "output": "ok"}
 
-    def send_command(self, command, args, source=None, timeout=None):
+    def send_command(self, command, args, source=None, replay=None, timeout=None):
         self.sent.append((command, args))
+        self.audit.append((source, replay))
         if command == "count":
             return {
                 "status": "success",
@@ -309,6 +343,10 @@ def test_apply_renders_the_selector_and_escapes_negatives(monkeypatch):
     assert args["color"] == "red"
     # The caller wrote integers; the escaping is the facade's job.
     assert args["selection"] == r"(chain E) and (resi \-12-\-8)"
+    assert conn.audit[0] == (
+        "typed apply(color)",
+        r"color red, (chain E) and (resi \-12-\-8)",
+    )
 
 
 def test_apply_uses_the_right_argument_name_per_command(monkeypatch):
@@ -366,6 +404,11 @@ def test_select_returns_typed_counts(monkeypatch):
     assert [c for c, _ in conn.sent] == ["select", "count"]
     assert counts.atoms == 104
     assert counts.residues == 5
+    assert conn.audit[0] == (
+        "typed select",
+        r"select ibs2, (chain E) and (resi \-12-\-8)",
+    )
+    assert conn.audit[1] == ("typed count", None)
 
 
 ##############################################################################
@@ -376,8 +419,9 @@ def test_select_returns_typed_counts(monkeypatch):
 class _SettingConnection(_RecordingConnection):
     """Answers inspect_setting so _unset_setting can report an after-state."""
 
-    def send_command(self, command, args, source=None, timeout=None):
+    def send_command(self, command, args, source=None, replay=None, timeout=None):
         self.sent.append((command, args))
+        self.audit.append((source, replay))
         if command == "inspect_setting":
             return {
                 "status": "success",
@@ -425,6 +469,10 @@ def test_unset_setting_parenthesises_a_single_field_selector(monkeypatch):
     assert args["scope"] == "atom"
     # Rendered bare here; the plugin wraps it because the scope says to.
     assert args["selection"] == "bac"
+    assert conn.audit[0] == (
+        "typed unset_setting",
+        "unset cartoon_transparency, (bac)",
+    )
 
 
 def test_unset_setting_sends_the_scope_explicitly(monkeypatch):

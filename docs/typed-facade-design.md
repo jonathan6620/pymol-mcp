@@ -243,6 +243,7 @@ plugin has PyMOL's Python.
 | `unset_setting(name, selector, scope)` | `SettingReport` | the four-row clearing table |
 | `get_representations(selector)` | `Representations` | "you cannot query what was shown" |
 | `get_history(limit, command, failed_only)` | `History` | `grep`ing `history.jsonl` from a shell |
+| `export_session(filename, session_id, redact_paths)` | `SessionExport` | manually correlating global JSONL, replay scripts and live scene state |
 | `save_file(filename, selector)` | `SaveMeta` | save, reopen in a fresh PyMOL, count objects |
 
 `contacts` is the interesting one: `whole_residues: bool` is exactly the

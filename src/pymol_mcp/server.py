@@ -35,6 +35,7 @@ from pymol_mcp.api import (
     SecondaryStructure,
     Selector,
     Sequence,
+    SessionExport,
     SettingReport,
 )
 from pymol_mcp.models import (
@@ -67,10 +68,15 @@ INTROSPECTION_COMMANDS = frozenset(
         "clear_selections",
         "save_file",
         "get_history",
+        "export_session",
         "get_representations",
         "inspect_setting",
     }
 )
+
+# These calls are useful in the audit log but do not alter a scene. They must
+# never be emitted into the replay script.
+READ_ONLY_COMMANDS = INTROSPECTION_COMMANDS | frozenset({"get_view", "get_setting"})
 
 
 PYMOL_COMMANDS: dict[str, CommandDef] = {
@@ -1010,6 +1016,7 @@ class PyMOLConnection:
         command: str,
         args: dict[str, Any],
         source: str | None = None,
+        replay: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """
@@ -1017,16 +1024,18 @@ class PyMOLConnection:
         Instead of sending raw code, sends {"type": "structured_command",
         "command": "show", "args": {"representation": "sticks", ...}}.
 
-        `source` is the literal PyMOL syntax the command came from. The plugin
-        records it in its session history. Leave it unset for internal traffic
-        such as the health-check ping, which should not appear in the history.
+        `source` is human-readable audit provenance. `replay` is separately
+        validated one-line PyMOL syntax for the deterministic session script.
+        Leave both unset for internal traffic such as the health-check ping.
         """
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to PyMOL")
         sock = self.sock
         if sock is None:  # Narrow the attribute after connect() for type checkers.
             raise ConnectionError("Not connected to PyMOL")
-        request = SocketRequest(command=command, args=args, source=source)
+        request = SocketRequest(
+            command=command, args=args, source=source, replay=replay
+        )
         try:
             # exclude_none keeps the payload byte-identical to before `source`
             # existed whenever it is unset, so an older plugin sees no change.
@@ -1424,6 +1433,7 @@ def _execute_user_command(
                     "color",
                     {"color": color, "selection": ss_sel},
                     source=f"color {color}, {ss_sel}",
+                    replay=f"color {color}, {ss_sel}",
                 )
                 parsed = SocketResponse(**response)
                 if parsed.status != "success":
@@ -1439,7 +1449,13 @@ def _execute_user_command(
                 conn,
             )
 
-        response = conn.send_command(command_name, args, source=user_input.strip())
+        source = user_input.strip()
+        response = conn.send_command(
+            command_name,
+            args,
+            source=source,
+            replay=None if command_name in READ_ONLY_COMMANDS else source,
+        )
         parsed = SocketResponse(**response)
         if parsed.status != "success":
             message = parsed.message or "Unknown error"
@@ -1568,7 +1584,9 @@ def _direct_output(response: dict[str, Any]) -> str:
 @mcp.tool()
 def get_view(ctx: Context, instance: int | None = None) -> list[float]:
     """Return the current PyMOL camera as an 18-value list."""
-    response = get_pymol_connection(instance).send_command("get_view", {})
+    response = get_pymol_connection(instance).send_command(
+        "get_view", {}, source="typed get_view"
+    )
     value = json.loads(_direct_output(response))
     if not isinstance(value, list) or len(value) != 18:
         raise RuntimeError("PyMOL returned an invalid camera view")
@@ -1582,8 +1600,10 @@ def set_view(
     """Restore a camera previously returned by get_view."""
     if len(view) != 18:
         return "View rejected: exactly 18 numeric values are required."
+    normalized = [float(item) for item in view]
+    replay = "set_view (" + ",".join(str(item) for item in normalized) + ")"
     response = get_pymol_connection(instance).send_command(
-        "set_view", {"view": [float(item) for item in view]}
+        "set_view", {"view": normalized}, source="typed set_view", replay=replay
     )
     _direct_output(response)
     return "Camera view restored."
@@ -1607,7 +1627,7 @@ def get_setting(
             "Setting name must contain only letters, numbers, and underscores"
         )
     response = get_pymol_connection(instance).send_command(
-        "get_setting", {"name": name}
+        "get_setting", {"name": name}, source="typed get_setting"
     )
     return json.loads(_direct_output(response))["value"]
 
@@ -1688,7 +1708,8 @@ def _render_png(
         response = get_pymol_connection(instance).send_command(
             "png",
             args,
-            source=f"png {path}, width={width}, height={height}, "
+            source="typed render_png",
+            replay=f"png {path}, width={width}, height={height}, "
             f"dpi={dpi}, ray={int(ray)}, quiet=1",
         )
         output = _direct_output(response).strip()
@@ -1753,10 +1774,20 @@ def _image_result(
 ##############################################################################
 
 
-def _introspect(command: str, args: dict[str, Any], instance: int | None) -> Any:
-    """Send an introspection command and return its structured payload."""
+def _introspect(
+    command: str,
+    args: dict[str, Any],
+    instance: int | None,
+    *,
+    replay: str | None = None,
+) -> Any:
+    """Send a structured command and return its typed payload.
+
+    Most callers are read-only introspection and deliberately omit replay.
+    ``save_file`` shares this return path but supplies its explicit save syntax.
+    """
     response = get_pymol_connection(instance).send_command(
-        command, args, source=f"{command} {args}"
+        command, args, source=f"typed {command}", replay=replay
     )
     if response.get("status") != "success":
         raise RuntimeError(response.get("message") or f"{command} failed")
@@ -1946,7 +1977,7 @@ def clear_selections(ctx: Context, instance: int | None = None) -> ClearedSelect
     you created.
     """
     return ClearedSelections.model_validate(
-        _introspect("clear_selections", {}, instance)
+        _introspect("clear_selections", {}, instance, replay="clear_selections")
     )
 
 
@@ -2009,10 +2040,14 @@ def _unset_setting(
             )
         args["selection"] = selection.to_selection()
 
-    source = "unset %s" % name
-    if "selection" in args:
-        source = "unset %s, %s" % (name, args["selection"])
-    response = get_pymol_connection(instance).send_command("unset", args, source=source)
+    replay = "unset %s" % name
+    if scope == "atom":
+        replay = "unset %s, (%s)" % (name, args["selection"])
+    elif scope == "object":
+        replay = "unset %s, %s" % (name, args["selection"])
+    response = get_pymol_connection(instance).send_command(
+        "unset", args, source="typed unset_setting", replay=replay
+    )
     _direct_output(response)
 
     # Report the state afterwards, so the call that clears also proves it
@@ -2111,6 +2146,35 @@ def get_history(
 
 
 @mcp.tool()
+def export_session(
+    ctx: Context,
+    filename: str,
+    session_id: str | None = None,
+    redact_paths: bool = False,
+    instance: int | None = None,
+) -> SessionExport:
+    """Export one PyMOL session as a portable ZIP for replay and analysis.
+
+    The bundle contains a manifest, only the selected session's history, its
+    replay script, an artifact-path inventory, and a final-scene snapshot when
+    that session is the live session. Molecular inputs and rendered outputs are
+    referenced but never copied into the archive.
+
+    By default this exports the current session. Set `session_id` to export an
+    older session recorded in the same history directory. `redact_paths=True`
+    replaces filesystem paths throughout the bundle; that is appropriate for
+    sharing or analysis, but the redacted replay script is not executable.
+    """
+    args: dict[str, Any] = {
+        "filename": filename,
+        "redact_paths": redact_paths,
+    }
+    if session_id is not None:
+        args["session_id"] = session_id
+    return SessionExport.model_validate(_introspect("export_session", args, instance))
+
+
+@mcp.tool()
 def save_file(
     ctx: Context,
     filename: str,
@@ -2136,7 +2200,9 @@ def save_file(
     args: dict[str, Any] = {"filename": filename, "state": state}
     if selection is not None:
         args["selection"] = selection.to_selection()
-    return SaveMeta.model_validate(_introspect("save_file", args, instance))
+    return SaveMeta.model_validate(
+        _introspect("save_file", args, instance, replay="save typed-output")
+    )
 
 
 ##############################################################################
@@ -2160,6 +2226,17 @@ _EFFECT_VALUE_ARG = {
 }
 # Commands that act on a selection alone.
 _EFFECT_NO_VALUE = {"zoom", "orient", "center", "delete", "enable", "disable"}
+
+
+def _effect_replay(command: str, args: dict[str, Any]) -> str:
+    """Render a typed effect as valid, one-line PyMOL command syntax."""
+    target = args.get("selection", args.get("name", "all"))
+    if command == "spectrum":
+        return f"spectrum {args['expression']}, rainbow, {target}"
+    value_arg = _EFFECT_VALUE_ARG.get(command)
+    if value_arg:
+        return f"{command} {args[value_arg]}, {target}"
+    return f"{command} {target}"
 
 
 def _apply(
@@ -2189,7 +2266,10 @@ def _apply(
         raise ValueError(f"'{command}' is not an effect command; try one of {known}")
 
     response = get_pymol_connection(instance).send_command(
-        command, args, source=f"{command} {args}"
+        command,
+        args,
+        source=f"typed apply({command})",
+        replay=_effect_replay(command, args),
     )
     output = _direct_output(response)
     return output or f"{command} applied to {args.get('selection', args.get('name'))}"
@@ -2205,7 +2285,8 @@ def _select(
     rendered = selection.to_selection()
     get_pymol_connection(instance).send_command(
         "select", {"name": name, "selection": rendered},
-        source=f"select {name}, {rendered}",
+        source="typed select",
+        replay=f"select {name}, {rendered}",
     )
     return Counts.model_validate(
         _introspect("count", {"selection": rendered}, instance)
@@ -2355,11 +2436,13 @@ def _render_movie(
                     connection.send_command(
                         "turn", {"axis": axis, "angle": step},
                         source=f"turn {axis}, {step:g}",
+                        replay=f"turn {axis}, {step:g}",
                     )
             else:
                 connection.send_command(
                     "frame", {"frame_number": start_state + index},
                     source=f"frame {start_state + index}",
+                    replay=f"frame {start_state + index}",
                 )
             frame_path = work / f"f{index:04d}.png"
             response = connection.send_command(
@@ -2371,7 +2454,7 @@ def _render_movie(
                     "ray": int(ray),
                     "quiet": 1,
                 },
-                source=f"png {frame_path}",
+                source="typed render_movie frame",
             )
             _direct_output(response)
             if not frame_path.exists():
