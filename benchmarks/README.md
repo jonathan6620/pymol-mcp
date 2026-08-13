@@ -38,11 +38,13 @@ To save an aggregate report locally:
 
 ```bash
 uv run python -m pymol_mcp.benchmark SESSION.zip \
-  --output benchmark-results/barhl2.json
+  --output benchmarks/artifacts/barhl2-figure-2b/results/result.json
 ```
 
-`benchmark-results/` and `benchmarks/private/` are ignored. Reports contain
-scores and renderer versions, not coordinate paths or molecular content.
+`benchmarks/cache/` and `benchmarks/artifacts/` are ignored storage for fetched
+public coordinates and generated public-test outputs. `benchmarks/private/` is
+reserved for sensitive evaluations. Reports contain scores and renderer
+versions, not coordinate paths or molecular content.
 
 ## Comparing MCP or skill versions
 

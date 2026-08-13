@@ -37,11 +37,14 @@ The same operations are available from the command line:
 
 ```bash
 uv run python -m pymol_mcp.lessons validate benchmarks/lessons/LESSON.json
-uv run python -m pymol_mcp.lessons publish benchmark-results/detailed.json \
+uv run python -m pymol_mcp.lessons publish \
+  benchmarks/artifacts/SCENARIO/results/detailed.json \
   --lesson benchmarks/lessons/LESSON.json \
-  --output benchmark-results/public.json
-uv run python -m pymol_mcp.lessons compare baseline-public.json \
-  candidate-public.json --output comparison.json
+  --output benchmarks/artifacts/SCENARIO/results/public.json
+uv run python -m pymol_mcp.lessons compare \
+  benchmarks/artifacts/SCENARIO/results/baseline-public.json \
+  benchmarks/artifacts/SCENARIO/results/candidate-public.json \
+  --output benchmarks/artifacts/SCENARIO/results/comparison.json
 ```
 
 The comparison includes per-check regressions/improvements and deltas for safe

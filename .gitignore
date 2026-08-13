@@ -61,6 +61,8 @@ history.jsonl
 session-*.pml
 *_replay.zip
 benchmarks/private/
+benchmarks/cache/
+benchmarks/artifacts/
 benchmark-results/
 figure*_exports/
 

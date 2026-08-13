@@ -11,8 +11,9 @@ MCP interface or this skill without publishing molecular data.
 - Use `redact_paths=true` only for a shareable analysis bundle. Its replay script
   is intentionally non-executable because path placeholders cannot resolve.
 - Keep coordinates, `.pse` files, raw `history.jsonl`, replay ZIPs, renders and
-  detailed agent traces outside the repository. In this repository use
-  `benchmarks/private/`, `benchmark-results/`, or another ignored local root.
+  detailed agent traces out of Git. Use ignored `benchmarks/cache/` for fetched
+  public coordinates, `benchmarks/artifacts/` for generated public-test outputs,
+  and `benchmarks/private/` only for sensitive evaluations.
 - Commit only code, aggregate metrics, synthetic fixtures, and scenarios based
   on public accessions. A private scenario can itself reveal chain names,
   residue identities or hypotheses, so keep its specification local too.
@@ -56,7 +57,7 @@ Add a private local reference render when visual comparison is useful:
 ```bash
 uv run python -m pymol_mcp.benchmark SESSION.zip \
   --reference /private/reference.png \
-  --output benchmark-results/result.json
+  --output benchmarks/artifacts/SCENARIO/results/result.json
 ```
 
 The evaluator removes historical `png` and `save` commands, rejects command
