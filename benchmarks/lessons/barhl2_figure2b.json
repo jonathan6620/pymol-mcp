@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "publication-barhl2-figure2b",
+  "visibility": "public_fixture",
+  "provenance": {
+    "source_policy": "public",
+    "sources": [
+      {
+        "provider": "rcsb",
+        "identifier": "8PMF"
+      },
+      {
+        "provider": "publication",
+        "identifier": "s41594-024-01449-6",
+        "panel": "Figure 2b"
+      }
+    ]
+  },
+  "scenarios": [
+    "barhl2-figure-2b"
+  ],
+  "findings": [
+    {
+      "id": "camera-side-ambiguity",
+      "component": "skill",
+      "symptom": "The recognition helix was viewed approximately end-on but from the opposite side of the published panel.",
+      "correction": "Compare asymmetric protein and DNA landmarks because an end-on helix orientation still permits two opposite viewing directions."
+    },
+    {
+      "id": "alternate-backbone-traces",
+      "component": "skill",
+      "symptom": "Alternate DNA atoms were drawn as lines but the smooth backbone traces in the panel were absent.",
+      "correction": "Create shared-plus-conformer DNA objects and show separately colored ribbons over the atomic line model."
+    },
+    {
+      "id": "gui-camera-not-recorded",
+      "component": "mcp",
+      "symptom": "A camera corrected manually in the GUI was absent from command history.",
+      "correction": "Read the live camera and record the same values through set_view before exporting replay."
+    },
+    {
+      "id": "replay-source-dependency",
+      "component": "replay",
+      "symptom": "A replay using fetch could continue after its public source was unavailable.",
+      "correction": "Declare source requirements and treat unresolved sources or PyMOL command errors as replay failures."
+    },
+    {
+      "id": "raster-byte-instability",
+      "component": "evaluation",
+      "symptom": "GUI and headless replay produced visually equivalent but non-identical PNG bytes.",
+      "correction": "Score semantic state and tolerant visual similarity independently of exact file hashes."
+    }
+  ],
+  "privacy": {
+    "raw_session_included": false,
+    "molecular_files_included": false,
+    "user_prompts_included": false,
+    "rendered_images_included": false,
+    "reviewed_for_release": true
+  }
+}

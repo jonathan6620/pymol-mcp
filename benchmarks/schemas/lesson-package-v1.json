@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pymol-mcp.local/schemas/lesson-package-v1.json",
+  "title": "PyMOL MCP session lesson",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "visibility",
+    "provenance",
+    "scenarios",
+    "findings",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "visibility": {
+      "enum": ["public_fixture", "synthetic_fixture", "private_evaluation_only"]
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["source_policy"],
+      "properties": {
+        "source_policy": {"enum": ["public", "synthetic", "private"]},
+        "sources": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"}
+    },
+    "findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "component", "symptom", "correction"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+          "component": {"enum": ["skill", "mcp", "replay", "evaluation"]},
+          "symptom": {"type": "string", "minLength": 1},
+          "correction": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "required": [
+        "raw_session_included",
+        "molecular_files_included",
+        "user_prompts_included",
+        "rendered_images_included",
+        "reviewed_for_release"
+      ],
+      "properties": {
+        "raw_session_included": {"type": "boolean"},
+        "molecular_files_included": {"type": "boolean"},
+        "user_prompts_included": {"type": "boolean"},
+        "rendered_images_included": {"type": "boolean"},
+        "reviewed_for_release": {"type": "boolean"}
+      }
+    }
+  }
+}

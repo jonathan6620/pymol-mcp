@@ -28,6 +28,7 @@ import pytest
 from conftest import PLUGIN_PATH, free_ports
 
 from pymol_mcp import server
+from pymol_mcp.benchmark import evaluate
 
 pytestmark = pytest.mark.integration
 
@@ -738,6 +739,91 @@ class TestHistoryEquivalence:
         assert final["representations"]["atoms"] == 10
         assert "reinitialize" in replay
         assert "fragment ala" in replay
+
+
+@requires_pymol
+class TestBenchmarkEvaluation:
+    def test_replay_is_scored_in_fresh_process_without_network(self, tmp_path):
+        """Exercise ZIP -> replay -> PSE -> semantic/image scoring end to end."""
+        view = [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            -20.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            40.0,
+            20.0,
+        ]
+        entries = [
+            "artifacts.json",
+            "final-state.json",
+            "history.jsonl",
+            "manifest.json",
+            "replay.pml",
+        ]
+        scenario = {
+            "schema_version": 1,
+            "id": "synthetic-alanine",
+            "semantic": {
+                "objects": {"ala": 10},
+                "selections": [
+                    {
+                        "id": "red_spheres",
+                        "expression": "ala and color red and rep spheres",
+                        "atoms": 10,
+                    }
+                ],
+                "named_selections": [],
+                "view_rotation": view[:9],
+                "view_rotation_max_error": 0.001,
+            },
+            "image": {
+                "width": 320,
+                "height": 240,
+                "dpi": 72,
+                "ray": True,
+                "background": "opaque_white",
+                "reference_max_mean_absolute_error": 12.0,
+            },
+            "privacy": {
+                "archive_entries": entries,
+                "forbid_embedded_molecular_files": True,
+            },
+        }
+        scenario_path = tmp_path / "scenario.json"
+        scenario_path.write_text(json.dumps(scenario))
+        replay = "\n".join(
+            [
+                "reinitialize",
+                "fragment ala",
+                "hide everything, ala",
+                "show spheres, ala",
+                "color red, ala",
+                "bg_color white",
+                "set ray_opaque_background, 1",
+                "set_view (" + ",".join(str(value) for value in view) + ")",
+            ]
+        )
+        bundle = tmp_path / "session.zip"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            for name in entries:
+                archive.writestr(name, replay if name == "replay.pml" else "{}")
+
+        result = evaluate(bundle, scenario_path, PYMOL)
+
+        assert result["passed"] is True, result
+        assert result["score"] == 1.0
 
 
 @requires_pymol

@@ -1,6 +1,6 @@
 ---
 name: pymol-mcp
-description: Drive PyMOL through the pymol MCP server. Covers the typed tools (get_chains, count, list_residues, contacts, get_gaps, get_secondary_structure, get_sequence, measure, select, apply, clear_selections, inspect_setting, unset_setting, get_representations, get_history, export_session, save_file, render_png, render_movie) and when to prefer them over selection strings, starting PyMOL when none is running, targeting one of several instances, what the command table does and does not accept, selection syntax and its silent traps, distinguishing missing coordinates and disordered segments from biological deletions, splitting DNA from RNA, labelling, transparency and why a setting can be sticky at three different layers, reading back and exporting what was run, saving sessions that actually contain something, rendering stills and animations, and verifying a change by looking at it. Use whenever calling mcp__pymol__* tools, interpreting coordinate gaps, or when a PyMOL tool call fails to connect.
+description: Drive PyMOL through the pymol MCP server. Covers typed inspection and scene tools; instance discovery, launch and targeting; the fixed command table and selection traps; settings layers; coordinate gaps; protein, DNA and RNA handling; labels and camera state; still and movie rendering; verified PSE saves; privacy-safe history and session export; fresh-process replay; and benchmark-driven MCP and skill improvement. Use whenever calling mcp__pymol__* tools, interpreting coordinate gaps, creating or verifying a PyMOL visualization, exporting or replaying a session, evaluating a PyMOL workflow, or diagnosing a connection or command failure.
 ---
 
 # Driving PyMOL through the MCP server
@@ -341,5 +341,9 @@ be ready to delete them.
 For rendering and visual verification, publication exports, viewport and transparency behavior, saved sessions, scene recovery, selection syntax, chain styling, labels, animations and representation safety, read [references/visualization-and-selection.md](references/visualization-and-selection.md).
 
 Always render and inspect the result after a visual change. Use [references/publication-rendering.md](references/publication-rendering.md) for paper-matched figures and publication deliverables.
+
+For session export, fresh-process replay, privacy boundaries, benchmark scenarios,
+or comparing MCP/skill versions, read
+[references/benchmarking-and-privacy.md](references/benchmarking-and-privacy.md).
 
 Before any irreversible representation change, record the current state with `mcp__pymol__get_representations`; before overwriting a file, confirm the path and verify the written artifact.

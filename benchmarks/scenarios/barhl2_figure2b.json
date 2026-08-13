@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "id": "barhl2-figure-2b",
+  "title": "BARHL2 DNA alternate-conformer overview",
+  "source": {
+    "kind": "public_accession",
+    "accession": "8PMF",
+    "object": "8pmf"
+  },
+  "agent_task": "Reproduce Figure 2b from s41594-024-01449-6 in PyMOL.",
+  "criteria": [
+    "BARHL2 is above the DNA and the recognition helix is viewed from the published side",
+    "DNA alternate conformers are green and yellow",
+    "the four single-conformation bases are highlighted red",
+    "both DNA conformers have smooth backbone traces",
+    "the final render has an opaque white background",
+    "the exported replay reconstructs an equivalent scene"
+  ],
+  "semantic": {
+    "objects": {
+      "8pmf": 1935,
+      "fig2b_dna_conf_a": 485,
+      "fig2b_dna_conf_b": 485
+    },
+    "selections": [
+      {
+        "id": "protein_cartoon",
+        "expression": "8pmf and chain A and polymer.protein and rep cartoon",
+        "atoms": 620
+      },
+      {
+        "id": "dna_lines",
+        "expression": "8pmf and polymer.nucleic and rep lines",
+        "atoms": 887
+      },
+      {
+        "id": "red_bases",
+        "expression": "fig2b_red_bases and color red and rep sticks",
+        "atoms": 39
+      },
+      {
+        "id": "conformer_a_backbone",
+        "expression": "fig2b_dna_conf_a and rep ribbon",
+        "atoms": 485
+      },
+      {
+        "id": "conformer_b_backbone",
+        "expression": "fig2b_dna_conf_b and rep ribbon",
+        "atoms": 485
+      }
+    ],
+    "named_selections": [
+      "fig2b_red_bases"
+    ],
+    "view_rotation": [
+      -0.9787087440490723,
+      -0.00888619851320982,
+      -0.20506489276885986,
+      -0.20189228653907776,
+      -0.13848908245563507,
+      0.9695673584938049,
+      -0.03701525181531906,
+      0.9903228878974915,
+      0.13374614715576172
+    ],
+    "view_rotation_max_error": 0.08
+  },
+  "image": {
+    "width": 1200,
+    "height": 990,
+    "dpi": 150,
+    "ray": true,
+    "background": "opaque_white",
+    "reference_max_mean_absolute_error": 12.0
+  },
+  "privacy": {
+    "archive_entries": [
+      "artifacts.json",
+      "final-state.json",
+      "history.jsonl",
+      "manifest.json",
+      "replay.pml"
+    ],
+    "forbid_embedded_molecular_files": true
+  }
+}

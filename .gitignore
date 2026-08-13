@@ -40,6 +40,30 @@ env/
 .coverage
 htmlcov/
 
+# Molecular inputs and local benchmark/session artifacts must remain local.
+# Public scenarios identify structures by accession; they do not commit coordinates.
+*.pdb
+*.ent
+*.cif
+*.mmcif
+*.bcif
+*.pse
+*.dcd
+*.xtc
+*.trr
+*.nc
+*.mrc
+*.map
+*.mae
+*.mol2
+*.sdf
+history.jsonl
+session-*.pml
+*_replay.zip
+benchmarks/private/
+benchmark-results/
+figure*_exports/
+
 # mypy
 .mypy_cache/
 

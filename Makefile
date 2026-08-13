@@ -40,7 +40,8 @@ SKILL_DIRS := $(patsubst %/,%,$(dir $(wildcard $(CURDIR)/skills/*/SKILL.md)))
 SKILL_DESTS := $(HOME)/.codex/skills $(HOME)/.claude/skills
 
 .PHONY: help install install-plugin install-pymolrc install-skill install-mcp \
-        test test-integration test-install lint typecheck validate
+        test test-integration test-benchmark test-install privacy lessons lint \
+        typecheck validate
 
 help:
 	@echo "Targets:"
@@ -51,7 +52,10 @@ help:
 	@echo "  install-mcp       Register the MCP server with Claude Code and Codex"
 	@echo "  test              Run the test suite"
 	@echo "  test-integration  Run tests against real PyMOL processes (slow)"
+	@echo "  test-benchmark    Evaluate a local replay ZIP (set BUNDLE=path)"
 	@echo "  test-install      Test the shell/ install scripts in a container (needs Docker)"
+	@echo "  privacy           Reject tracked molecular and raw-session files"
+	@echo "  lessons           Validate shareable session-lesson packages"
 	@echo "  lint              Run ruff"
 	@echo "  typecheck         Run Pyright"
 	@echo "  validate          Run lint, type checks, and tests"
@@ -61,6 +65,9 @@ help:
 	@echo "  FORCE=1           install-pymolrc: replace an unmanaged ~/.pymolrc.py"
 	@echo "  FULL=1            test-install: also test the conda path (slow, ~1 GB)"
 	@echo "  SKIP_CLIENTS=1    install-mcp: leave the MCP client config alone"
+	@echo "  SCENARIO=<path>   test-benchmark: scenario JSON (default: Figure 2b)"
+	@echo "  REFERENCE=<path>  test-benchmark: optional local reference image"
+	@echo "  OUTPUT=<path>     test-benchmark: optional local aggregate report"
 	@echo ""
 	@echo "Detected PYMOL: $(if $(PYMOL),$(PYMOL),<none - pass PYMOL=/path/to/pymol>)"
 
@@ -126,6 +133,16 @@ test:
 test-integration:
 	uv run pytest -m integration -v
 
+test-benchmark:
+	@if [ -z "$(BUNDLE)" ]; then \
+	  echo "error: pass BUNDLE=/path/to/session.zip"; exit 1; \
+	fi
+	uv run python -m pymol_mcp.benchmark "$(BUNDLE)" \
+	  $(if $(SCENARIO),--scenario "$(SCENARIO)",) \
+	  $(if $(REFERENCE),--reference "$(REFERENCE)",) \
+	  $(if $(OUTPUT),--output "$(OUTPUT)",) \
+	  $(if $(PYMOL),--pymol "$(PYMOL)",)
+
 # Runs the shell/ install scripts in a throwaway container, which is the only
 # way to test them: they install uv, edit ~/.pymolrc.py and create conda
 # environments. Needs Docker. FULL=1 adds the conda and PyMOL path, which
@@ -136,7 +153,13 @@ test-install:
 lint:
 	uv run ruff check .
 
+privacy:
+	uv run python scripts/check_repo_privacy.py
+
+lessons:
+	uv run python scripts/validate_lessons.py
+
 typecheck:
 	uv run pyright src/pymol_mcp
 
-validate: lint typecheck test
+validate: privacy lessons lint typecheck test
