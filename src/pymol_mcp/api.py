@@ -10,10 +10,11 @@ not the one intended — so the traps it contains have to be either documented o
 designed out. See docs/typed-facade-design.md.
 """
 
+import re
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Standard PDB deoxyribonucleotide residue names. Everything else that is
 # nucleic is treated as RNA, which puts modified and non-standard residues on
@@ -61,6 +62,8 @@ class Molecule(str, Enum):
 class ResidueRange(BaseModel):
     """An inclusive residue range, with escaping handled for you."""
 
+    model_config = ConfigDict(extra="forbid")
+
     start: int
     end: int
 
@@ -80,9 +83,10 @@ class Selector(BaseModel):
     """A selection expressed as fields rather than as a selection string.
 
     Fields combine with `and`. `raw` is an escape hatch for the cases PyMOL's
-    algebra expresses and this model does not; when set, it is used verbatim and
-    every other field is ignored.
+    algebra expresses and this model does not; it cannot accompany other fields.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     object: str | None = None
     chain: str | None = None
@@ -101,17 +105,45 @@ class Selector(BaseModel):
     raw: str | None = Field(
         default=None,
         description=(
-            "Literal PyMOL selection, used verbatim in place of the other "
+            "Literal PyMOL selection, used alone without other "
             "fields. For selections this model cannot express."
         ),
     )
+
+    @field_validator("object", "chain")
+    @classmethod
+    def identifier(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(
+            r"[A-Za-z0-9_][A-Za-z0-9_.-]*", value
+        ):
+            raise ValueError("use a single identifier, or raw for selection syntax")
+        if value is not None and value.lower() in {"all", "none", "and", "or", "not"}:
+            raise ValueError("reserved selection word; use raw explicitly")
+        return value
+
+    @field_validator("atom_names")
+    @classmethod
+    def named_atoms(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and (
+            not value
+            or any(not re.fullmatch(r"[A-Za-z0-9_']+", name) for name in value)
+        ):
+            raise ValueError("atom_names must contain literal names; use raw otherwise")
+        return value
 
     @model_validator(mode="after")
     def not_empty(self) -> "Selector":
         if self.raw is not None:
             if not self.raw.strip():
                 raise ValueError("raw selection must not be blank")
+            if any(
+                getattr(self, name) is not None
+                for name in type(self).model_fields if name != "raw"
+            ):
+                raise ValueError("raw cannot be combined with other selector fields")
             return self
+        if self.residues == []:
+            raise ValueError("residues must not be empty")
         if not any(
             (
                 self.object,
@@ -431,3 +463,10 @@ class MovieMeta(BaseModel):
     truncated: bool = False
     dropped_frames: int = 0
     note: str | None = None
+
+
+class TranslationResult(BaseModel):
+    selection: str
+    vector: tuple[float, float, float]
+    state: int
+    atoms: int

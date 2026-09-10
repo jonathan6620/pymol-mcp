@@ -18,7 +18,7 @@ from typing import Annotated, Any, AsyncIterator, Literal
 
 from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.types import CallToolResult, TextContent
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, FiniteFloat, TypeAdapter
 
 from pymol_mcp.api import (
     Chains,
@@ -37,6 +37,7 @@ from pymol_mcp.api import (
     Sequence,
     SessionExport,
     SettingReport,
+    TranslationResult,
 )
 from pymol_mcp.models import (
     CommandDef,
@@ -71,12 +72,15 @@ INTROSPECTION_COMMANDS = frozenset(
         "export_session",
         "get_representations",
         "inspect_setting",
+        "translate",
     }
 )
 
 # These calls are useful in the audit log but do not alter a scene. They must
 # never be emitted into the replay script.
-READ_ONLY_COMMANDS = INTROSPECTION_COMMANDS | frozenset({"get_view", "get_setting"})
+READ_ONLY_COMMANDS = (INTROSPECTION_COMMANDS - {"translate"}) | frozenset(
+    {"get_view", "get_setting"}
+)
 
 
 PYMOL_COMMANDS: dict[str, CommandDef] = {
@@ -228,12 +232,16 @@ PYMOL_COMMANDS: dict[str, CommandDef] = {
         check_selection=True,
     ),
     "spectrum": CommandDef(
-        description="Colors selection in a spectrum",
-        pattern=r"^spectrum\s+([^,]+)(?:\s*,\s*([^,]+))?(?:\s*,\s*(.+))?$",
+        description="Colors selection in a spectrum, optionally with numeric bounds",
+        pattern=(r"^spectrum\s+([^,]+)(?:\s*,\s*([^,]+))?"
+                 r"(?:\s*,\s*([^,]+))?(?:\s*,\s*([^,]+))?"
+                 r"(?:\s*,\s*([^,]+))?$"),
         parameters=[
             ParameterDef(name="expression", required=True),
             ParameterDef(name="palette", required=False, default="rainbow"),
             ParameterDef(name="selection", required=False, default="all"),
+            ParameterDef(name="minimum", required=False),
+            ParameterDef(name="maximum", required=False),
         ],
         check_selection=True,
     ),
@@ -1244,16 +1252,12 @@ def get_pymol_connection(port: int | None = None) -> PyMOLConnection:
         raise RuntimeError("No PyMOL instance selected.")
 
     existing = _connections.get(port)
-    if existing is not None:
-        try:
-            existing.send_command("refresh", {})
-            return existing
-        except Exception:
-            try:
-                existing.disconnect()
-            except Exception:
-                pass
-            _connections.pop(port, None)
+    if existing is not None and existing.sock is not None:
+        # The requested command detects transport failure and disconnects.
+        # Probing with refresh doubles round trips and redraws the scene even
+        # for read-only tools. Never retry a failed mutation automatically: it
+        # may have executed before its response was lost.
+        return existing
 
     conn = PyMOLConnection(port=port)
     if not conn.connect():
@@ -2011,6 +2015,113 @@ def inspect_setting(
     )
 
 
+# Fixed-length JSON arrays expose vector values without comma-based parsing.
+Coordinate = Annotated[float, Field(strict=True, allow_inf_nan=False)]
+Vector3 = tuple[Coordinate, Coordinate, Coordinate]
+SettingValue = bool | int | FiniteFloat | str | Vector3
+
+
+def _set_setting(
+    name: str,
+    value: SettingValue,
+    scope: Literal["atom", "object", "global"],
+    selection: Selector | None = None,
+    instance: int | None = None,
+) -> SettingReport:
+    if not re.fullmatch(r"[A-Za-z_]\w*", name):
+        raise ValueError("invalid setting name")
+    value = TypeAdapter(SettingValue).validate_python(value)
+    if scope not in {"atom", "object", "global"}:
+        raise ValueError("scope must be atom, object, or global")
+    if scope == "global":
+        if selection is not None:
+            raise ValueError("global scope cannot include a selection")
+        target = None
+    else:
+        if selection is None:
+            raise ValueError("object and atom scopes require a selection")
+        if scope == "object" and (
+            selection.object is None
+            or any(v is not None for k, v in selection.model_dump().items()
+                   if k != "object")
+        ):
+            raise ValueError("object scope requires only Selector(object=...)")
+        target = selection.to_selection()
+    if isinstance(value, str) and not re.fullmatch(r"[A-Za-z0-9_.+-]+", value):
+        raise ValueError("string values must be scalar tokens, such as red or on")
+    if isinstance(value, bool):
+        literal = str(int(value))
+    elif isinstance(value, str):
+        literal = value  # cmd.set treats quoted color names as unknown colors.
+    else:
+        literal = repr(list(value)) if isinstance(value, tuple) else repr(value)
+    replay = f"set {name}, {literal}"
+    if target is not None:
+        replay += f", ({target})" if scope == "atom" else f", {target}"
+    args = {"setting": name, "value": value, "scope": scope}
+    if target is not None:
+        args["selection"] = target
+    response = get_pymol_connection(instance).send_command(
+        "set", args, source="typed set_setting", replay=replay,
+    )
+    _direct_output(response)
+    inspect_args = {"name": name}
+    if target is not None:
+        inspect_args["selection"] = target
+    return SettingReport.model_validate(
+        _introspect("inspect_setting", inspect_args, instance)
+    )
+
+
+@mcp.tool()
+def set_setting(
+    ctx: Context,
+    name: str,
+    value: SettingValue,
+    scope: Literal["atom", "object", "global"],
+    selection: Selector | None = None,
+    instance: int | None = None,
+) -> SettingReport:
+    """Write a scalar or three-number vector setting and report effective values.
+
+    Global scope requires no selection. Object scope requires a single object
+    field. Atom scope wraps the selection to address per-atom overrides.
+    For label_position, pass value=[3, 0, 0] without constructing command syntax.
+    String values are scalar tokens such as red or on, not free-form text.
+    """
+    return _set_setting(name, value, scope, selection, instance)
+
+
+def _translate(
+    selection: Selector, vector: Vector3, state: int = 0,
+    instance: int | None = None,
+) -> TranslationResult:
+    vector = TypeAdapter(Vector3).validate_python(vector)
+    if isinstance(state, bool) or not isinstance(state, int) or state < 0:
+        raise ValueError("state must be 0 (all states) or a positive integer")
+    rendered = selection.to_selection()
+    args = {"selection": rendered, "vector": vector, "state": state}
+    replay = f"translate {list(vector)!r}, ({rendered}), {state}, 0"
+    return TranslationResult.model_validate(
+        _introspect("translate", args, instance, replay=replay)
+    )
+
+
+@mcp.tool()
+def translate(
+    ctx: Context, selection: Selector, vector: Vector3,
+    state: Annotated[int, Field(ge=0)] = 0,
+    instance: int | None = None,
+) -> TranslationResult:
+    """Shift selected atomic coordinates by [x, y, z] Angstroms in model axes.
+
+    Camera orientation does not affect the displacement. State 0 moves all
+    states; a positive state moves only that state. Does not move the camera
+    or change an object's display matrix. Rejects an empty selection.
+    """
+    return _translate(selection, vector, state, instance)
+
+
 def _unset_setting(
     ctx: Context,
     name: str,
@@ -2273,6 +2384,31 @@ def _apply(
     )
     output = _direct_output(response)
     return output or f"{command} applied to {args.get('selection', args.get('name'))}"
+
+
+def _label_text(
+    selection: Selector, text: str, instance: int | None = None,
+) -> str:
+    rendered = selection.to_selection()
+    expression = repr(text)
+    response = get_pymol_connection(instance).send_command(
+        "label", {"selection": rendered, "expression": expression},
+        source="typed label_text",
+        replay=f"label {rendered}, {expression}",
+    )
+    return _direct_output(response) or "Label text applied"
+
+
+@mcp.tool()
+def label_text(
+    ctx: Context, selection: Selector, text: str, instance: int | None = None,
+) -> str:
+    """Label selected atoms with literal text; quoting is handled automatically.
+
+    Prefer atom_names to place one label per residue. Use an empty text to
+    clear labels. For computed labels, use parse_and_execute with label syntax.
+    """
+    return _label_text(selection, text, instance)
 
 
 def _select(

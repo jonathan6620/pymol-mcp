@@ -10,6 +10,18 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
+# Protect real session history even when plugins are imported during collection.
+# History tests explicitly opt into their own tmp_path directories.
+_history_environment = pytest.MonkeyPatch()
+_history_environment.setenv("PYMOL_MCP_HISTORY", "off")
+
+
+def pytest_unconfigure(config):
+    _history_environment.undo()
+
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_PATH = REPO_ROOT / "pymol-mcp-socket-plugin" / "__init__.py"
 SCRIPTS_DIR = REPO_ROOT / "scripts"

@@ -874,3 +874,98 @@ class TestSaveMetadataMatchesAFreshProcess:
         )
         assert sorted(reopened["OBJECTS"].split(",")) == sorted(meta["objects"])
         assert int(reopened["ATOMS"]) == meta["atoms"]
+
+
+@requires_pymol
+def test_bounded_spectrum_and_literal_label(instances):
+    from pymol_mcp.api import Selector
+
+    inst = _one_instance(instances)
+    assert inst.send("fragment", {"name": "ala"})["status"] == "success"
+    parsed = server.parse_pymol_input("spectrum b, blue_red, ala, 0, 2")
+    reply = inst.send(parsed.command, parsed.args)
+    assert reply["status"] == "success", reply
+    output = server._label_text(Selector(object="ala", atom_names=["CA"]),
+                                "Site 1", inst.port)
+    assert "error" not in output.lower(), output
+    reply = inst.send("count", {"selection": 'ala and label "Site 1"'})
+    assert reply["status"] == "success", reply
+    assert reply["result"]["data"]["atoms"] == 1
+
+
+@requires_pymol
+def test_translation_and_vector_settings_survive_replay(instances, tmp_path):
+    from pymol_mcp.api import Selector
+
+    inst = _one_instance(instances)
+    inst.send("fragment", {"name": "ala"}, replay="fragment ala")
+    inst.send("create", {"name": "reference", "selection": "ala"},
+              replay="create reference, ala")
+    # Rotate the camera first: translation must still use model coordinates.
+    inst.send("turn", {"axis": "z", "angle": 90}, replay="turn z, 90")
+    moved = server._translate(Selector(object="ala"), [3, 4, 0], instance=inst.port)
+    assert moved.atoms == 10
+    assert moved.vector == (3.0, 4.0, 0.0)
+    distance = inst.send("measure", {"selection1": "ala and name CA",
+                                    "selection2": "reference and name CA"})
+    assert distance["result"]["data"]["distance"] == pytest.approx(5)
+    report = server._set_setting("label_position", [3, 2, 1], "global",
+                                 instance=inst.port)
+    assert report.global_value == [3, 2, 1]
+    report = server._set_setting("label_position", [4, 5, 6], "object",
+                                 Selector(object="ala"), inst.port)
+    assert report.object_values[0].value == [4, 5, 6]
+    report = server._set_setting("label_position", [7, 8, 9], "atom",
+                                 Selector(object="ala", atom_names=["CA"]), inst.port)
+    assert report.values[0].value == [7, 8, 9]
+    server._set_setting("label_color", "red", "global", instance=inst.port)
+    server._set_setting("depth_cue", False, "global", instance=inst.port)
+    history = inst.send("get_history", {})["result"]["data"]
+    replay = Path(history["script"])
+    script = tmp_path / "verify_typed.py"
+    script.write_text(
+        "from pymol import cmd\n"
+        f"cmd.do('@{replay}')\n"
+        "a = cmd.get_atom_coords('ala and name CA')\n"
+        "b = cmd.get_atom_coords('reference and name CA')\n"
+        "assert all(abs(x-y-d) < 1e-4 for x,y,d in zip(a,b,[3,4,0]))\n"
+        "assert cmd.get_setting_tuple('label_position')[1] == (3.,2.,1.)\n"
+        "assert cmd.get_setting_tuple('label_position', 'ala')[1] == (4.,5.,6.)\n"
+        "values = []\n"
+        "cmd.iterate('ala and name CA', 'values.append(s.label_position)', "
+        "space={'values': values})\n"
+        "assert list(values[0]) == [7.,8.,9.]\n"
+        "assert cmd.get_setting_int('label_color') == cmd.get_color_index('red')\n"
+        "assert cmd.get_setting_int('depth_cue') == 0\n"
+        "print('TYPED_REPLAY_OK')\n"
+    )
+    proc = subprocess.run([PYMOL, "-cq", str(script)], capture_output=True,
+                          text=True, timeout=60)
+    assert "TYPED_REPLAY_OK" in proc.stdout, proc.stdout + proc.stderr
+
+
+@requires_pymol
+def test_translate_changes_only_the_requested_state(tmp_path):
+    script = tmp_path / "state_translation.py"
+    script.write_text(
+        "import importlib.util\n"
+        "from pymol import cmd\n"
+        "spec = importlib.util.spec_from_file_location("
+        f"'plugin', {str(PLUGIN_PATH)!r})\n"
+        "plugin = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(plugin)\n"
+        "cmd.fragment('ala')\n"
+        "cmd.create('ala', 'ala', 1, 2)\n"
+        "before = cmd.get_atom_coords('ala and name CA', state=1)\n"
+        "dispatch = plugin.build_command_dispatcher(cmd)\n"
+        "result = dispatch['translate']({'selection': 'ala', "
+        "'vector': [1,2,3], 'state': 2})\n"
+        "assert result['atoms'] == 10\n"
+        "assert cmd.get_atom_coords('ala and name CA', state=1) == before\n"
+        "after = cmd.get_atom_coords('ala and name CA', state=2)\n"
+        "assert all(abs(a-b-d) < 1e-4 for a,b,d in zip(after,before,[1,2,3]))\n"
+        "print('STATE_OK')\n"
+    )
+    proc = subprocess.run([PYMOL, "-cq", str(script)], capture_output=True,
+                          text=True, timeout=60)
+    assert "STATE_OK" in proc.stdout, proc.stdout + proc.stderr

@@ -220,8 +220,12 @@ class Counts(BaseModel):
 `Selector.raw` passes a selection string through untouched. It exists because
 PyMOL's algebra is genuinely more expressive than any model we would ship, and
 removing the escape hatch would make the typed path a downgrade for expert use.
-It should be the *documented* exception, not the default: when `raw` is set, the
-other fields are ignored and the existing validation applies.
+Use `raw` alone: combining it with another non-null field raises a validation
+error. Unknown fields are also rejected, including inside residue ranges.
+Typed object and chain fields accept single identifiers; atom names accept
+literal names such as `CA` and `C1'`. Use `raw` for wildcards, blank chains,
+unusual identifiers, and compound selection syntax. Empty residue and atom-name
+lists are rejected so they cannot silently remove a filter.
 
 ## Which commands become typed
 

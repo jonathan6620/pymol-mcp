@@ -42,6 +42,7 @@ SAFE_REPLAY_COMMANDS = frozenset(
         "show",
         "spectrum",
         "turn",
+        "translate",
         "unset",
         "viewport",
         "zoom",

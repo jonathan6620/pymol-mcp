@@ -438,6 +438,42 @@ make test
 make lint
 ```
 
+Pull requests and pushes run `make validate` on Python 3.10 and 3.13. A separate
+CI job installs PyMOL from `environment.yml` and runs `make test-integration`.
+The default suite includes a real MCP stdio round trip without requiring PyMOL;
+it disables instance discovery to avoid inspecting local sessions.
+
+Typed selections reject unknown fields, empty filter lists, and `raw` combined
+with other filters. Use `raw` alone for selection expressions and identifiers
+outside the typed fields' accepted syntax.
+
+The socket plugin accepts up to 32 simultaneous clients and 1 MiB per request
+(excluding its newline delimiter). Oversized requests receive an error and the
+connection closes; malformed requests receive an error and can be followed by a
+corrected request on the same connection. Restart PyMOL after updating the plugin
+to load these changes.
+
+`label_text` accepts literal text and a typed selection, so callers need not
+construct quoted label expressions. For a fixed color scale, the command table
+also accepts `spectrum b, blue_red, model, 0, 2` (minimum and maximum).
+
+Cached connections send the requested command without a preliminary `refresh`.
+If a connection fails, the command reports the error and disconnects; the next
+call reconnects. Failed mutations are never automatically retried because their
+response may have been lost after execution.
+
+`translate(selection=..., vector=[3, 0, 0], state=0)` shifts coordinates in
+model axes, independent of the camera. State 0 moves all states; positive
+states target one state. `set_setting` accepts scalars and three-number vectors
+with an explicit `global`, `object`, or `atom` scope and reports effective values.
+Object scope requires a single object field; global scope takes no selection.
+For example, set `label_position` to `[3, 0, 0]` directly instead of constructing
+a comma-separated command. String values are scalar tokens such as `red` or `on`.
+
+See [the local log review](docs/log-review.md) for the evidence and remaining
+opportunities. Tests disable personal history by default; history tests use
+temporary directories.
+
 ## Credits
 
 This project is derived from [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp).

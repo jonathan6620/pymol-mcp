@@ -602,6 +602,15 @@ def _check_setting_name(name):
     return name
 
 
+def _finite_vector(value):
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError("vector must contain exactly three finite numbers")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float))
+           or not math.isfinite(v) for v in value):
+        raise ValueError("vector must contain exactly three finite numbers")
+    return [float(v) for v in value]
+
+
 def _atom_scope(selection):
     r"""Wrap a selection so it addresses the atom layer, not the object layer.
 
@@ -799,20 +808,69 @@ def build_command_dispatcher(cmd):
         )
 
     def _set(args):
+        name = _check_setting_name(args.get("setting", ""))
+        value = args.get("value", "")
         selection = args.get("selection")
+        scope = args.get("scope")
+        if scope is not None:
+            if scope not in ("global", "object", "atom"):
+                raise ValueError("invalid setting scope")
+            if scope == "global" and selection is not None:
+                raise ValueError("global scope cannot include a selection")
+            if scope != "global" and not selection:
+                raise ValueError("scoped setting needs a selection")
+            if isinstance(value, (list, tuple)):
+                value = _finite_vector(value)
+            elif not isinstance(value, (str, bool, int, float)):
+                raise ValueError("setting value must be scalar or a vector")
+            elif isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("setting value must be finite")
+            if scope == "object" and selection not in cmd.get_names("objects"):
+                raise ValueError("object scope requires an existing object name")
+            if scope == "atom":
+                selection = _atom_scope(selection)
         if selection:
             _reject_control_characters(selection)
-            return cmd.set(args.get("setting", ""), args.get("value", ""), selection)
-        return cmd.set(args.get("setting", ""), args.get("value", ""))
+            return cmd.set(name, value, selection)
+        return cmd.set(name, value)
+
+    def _translate(args):
+        vector = _finite_vector(args.get("vector"))
+        state = args.get("state", 0)
+        if isinstance(state, bool) or not isinstance(state, int) or state < 0:
+            raise ValueError("state must be 0 or a positive integer")
+        selection = args.get("selection")
+        if not isinstance(selection, str) or not selection.strip():
+            raise ValueError("translate requires a selection")
+        _reject_control_characters(selection)
+        atoms = cmd.count_atoms(selection, state=state)
+        if not atoms:
+            raise ValueError("no selected atoms in the chosen state")
+        cmd.translate(vector, selection=selection, state=state, camera=0)
+        return {"selection": selection, "vector": vector, "state": state,
+                "atoms": atoms}
 
     def _cartoon(args):
         return cmd.cartoon(args.get("type", "automatic"), args.get("selection", "all"))
 
     def _spectrum(args):
+        expression = args.get("expression", "count")
+        if expression not in ("count", "pc"):
+            check_atom_expression(expression)
+        bounds = {}
+        for name in ("minimum", "maximum"):
+            if args.get(name) is not None:
+                value = float(args[name])
+                if not math.isfinite(value):
+                    raise ValueError("spectrum bounds must be finite numbers")
+                bounds[name] = value
+        if len(bounds) == 2 and bounds["minimum"] >= bounds["maximum"]:
+            raise ValueError("spectrum minimum must be less than maximum")
         return cmd.spectrum(
-            args.get("expression", "count"),
+            expression,
             args.get("palette", "rainbow"),
             args.get("selection", "all"),
+            **bounds,
         )
 
     def _label(args):
@@ -1532,14 +1590,21 @@ def build_command_dispatcher(cmd):
             for g in ordered[:20]
         ]
 
-        global_value = plain(cmd.get_setting_tuple(name)[1][0])
+        def setting_value(object_name=None):
+            result = (cmd.get_setting_tuple(name) if object_name is None
+                      else cmd.get_setting_tuple(name, object_name))
+            kind, values = result
+            # PyMOL cSetting_float3 = 4; vectors occupy the whole tuple.
+            return plain(values if kind == 4 else values[0])
+
+        global_value = setting_value()
         object_values = []
         for model in sorted(objects):
             try:
                 object_values.append(
                     {
                         "object": model,
-                        "value": plain(cmd.get_setting_tuple(name, model)[1][0]),
+                        "value": setting_value(model),
                     }
                 )
             except Exception:
@@ -2035,6 +2100,7 @@ def build_command_dispatcher(cmd):
         "export_session": _export_session,
         "get_representations": _get_representations,
         "inspect_setting": _inspect_setting,
+        "translate": _translate,
         "unset": _unset,
         "enable": _enable,
         "disable": _disable,
@@ -2136,6 +2202,10 @@ def build_command_dispatcher(cmd):
 ##############################################################################
 
 
+MAX_MESSAGE_BYTES = 1024 * 1024
+MAX_CLIENTS = 32
+
+
 class SocketServer:
     def __init__(self, host="localhost", port=9876):
         self.host = host
@@ -2234,6 +2304,14 @@ class SocketServer:
                 _log(f"Connected to client: {address}")
                 client.settimeout(1.0)
                 with self._clients_lock:
+                    if len(self._clients) >= MAX_CLIENTS:
+                        try:
+                            self._send_error(client, "Too many client connections")
+                        except OSError:
+                            pass
+                        finally:
+                            client.close()
+                        continue
                     self._clients.add(client)
                 worker = threading.Thread(target=self._serve_client, args=(client,))
                 worker.daemon = True
@@ -2249,6 +2327,11 @@ class SocketServer:
             _log("Socket server stopped")
             if not was_stopping:
                 _report_listener_death(self.port, failure)
+
+    @staticmethod
+    def _send_error(client, message):
+        payload = json.dumps({"status": "error", "message": message}) + "\n"
+        client.sendall(payload.encode("utf-8"))
 
     def _serve_client(self, client):
         """Read and answer one client until it disconnects.
@@ -2271,6 +2354,9 @@ class SocketServer:
                     buffer += data
                     while b"\n" in buffer:
                         line, buffer = buffer.split(b"\n", 1)
+                        if len(line) > MAX_MESSAGE_BYTES:
+                            self._send_error(client, "Message exceeds size limit")
+                            return
                         if not line.strip():
                             continue
                         try:
@@ -2288,7 +2374,11 @@ class SocketServer:
                         # PyMOL is not safe to drive from several threads at once,
                         # so connections are concurrent but commands are not.
                         with self._command_lock:
-                            result = self._handle_command(command)
+                            try:
+                                result = self._handle_command(command)
+                            except Exception as e:
+                                self._send_error(client, "Command failed: %s" % e)
+                                continue
 
                         failed = isinstance(result, dict) and (
                             result.get("executed") is False
@@ -2305,6 +2395,10 @@ class SocketServer:
                             }
                         client.sendall((json.dumps(response) + "\n").encode("utf-8"))
 
+                    if len(buffer) > MAX_MESSAGE_BYTES:
+                        self._send_error(client, "Message exceeds size limit")
+                        return
+
                 except socket.timeout:
                     continue
                 except Exception as e:
@@ -2320,14 +2414,25 @@ class SocketServer:
 
     def _handle_command(self, command):
         """Handle received structured command"""
-        if not command:
-            return
+        if not isinstance(command, dict):
+            return {"executed": False, "error": "Request must be a JSON object"}
 
         cmd_type = command.get("type", "")
         if cmd_type == "instance_info":
             return describe_instance(self.port)
         if cmd_type != "structured_command":
             return {"executed": False, "error": f"Unknown message type: {cmd_type}"}
+
+        if (
+            not isinstance(command.get("command"), str)
+            or not command["command"].strip()
+        ):
+            return {"executed": False, "error": "command must be a non-empty string"}
+        if not isinstance(command.get("args", {}), dict):
+            return {"executed": False, "error": "args must be a JSON object"}
+        for field in ("source", "replay"):
+            if command.get(field) is not None and not isinstance(command[field], str):
+                return {"executed": False, "error": "%s must be a string" % field}
 
         global received_commands
         cmd_name = command.get("command", "")

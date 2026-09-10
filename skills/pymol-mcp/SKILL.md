@@ -267,8 +267,11 @@ mistake documented further down.
 | `measure` | distance between two atoms, no scene change |
 | `select` | name a selection, and report what it caught |
 | `apply` | colour/show/hide/zoom a typed selection |
+| `translate` | shift selected coordinates by a vector in model axes |
+| `label_text` | literal labels with quoting handled automatically |
 | `clear_selections` | delete every named selection before rendering |
 | `inspect_setting` | a setting at all three layers, and which atoms override it |
+| `set_setting` | write a scalar or vector at an explicit setting layer |
 | `unset_setting` | clear a scoped override, at a layer you choose |
 | `get_representations` | what is currently shown, per object and chain |
 | `get_history` | what was run, what failed, and where files went |
@@ -277,10 +280,26 @@ mistake documented further down.
 
 A `Selector` takes `object`, `chain`, `residues`, `residue_range`, `molecule`,
 `atom_names`, or `raw` as an escape hatch for anything the model cannot say.
+`raw` must be used alone; unknown fields and empty filter lists are rejected.
 `raw` is deliberately available — PyMOL's algebra is more expressive than the
 model — but reaching for it puts the traps below back in play. A single field
 renders as a bare word (`Selector(object="bac")` → `bac`), which matters only
 for settings; see below.
+
+Use `translate(selection=..., vector=[3, 0, 0], state=0)` for coordinate shifts
+instead of constructing `alter_state` assignments. Vectors are in Angstroms along
+model axes, independent of the camera; state 0 moves all states and a positive
+state moves only that state. This changes coordinates, not the camera.
+
+Use `set_setting(name="label_position", value=[3, 0, 0], scope="atom",
+selection=...)` for vector settings. Global scope takes no selection; object
+scope takes only `Selector(object="...")`; atom scope explicitly writes atom
+overrides. The result reports effective values, so existing inner overrides
+remain visible. Scalar strings are tokens such as `red` or `on`.
+
+Use `label_text` for literal labels and `label` for computed expressions.
+For fixed color bounds, the command table accepts
+`spectrum b, blue_red, model, 0, 2`.
 
 ### Commands that do NOT exist in the table
 

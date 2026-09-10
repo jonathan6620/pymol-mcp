@@ -137,3 +137,63 @@ class TestSocketServerDispatch:
             sock.sendall(wire)
             replies = [json.loads(reader.readline()) for _ in range(2)]
         assert [reply["status"] for reply in replies] == ["success", "success"]
+
+
+@pytest.mark.parametrize("payload", [
+    [], None, 42, "refresh", {},
+    {"type": "structured_command", "command": []},
+    {"type": "structured_command", "command": ""},
+    {"type": "structured_command", "command": "show", "args": []},
+    {"type": "structured_command", "command": "show", "source": {}},
+    {"type": "structured_command", "command": "show", "replay": 1},
+])
+def test_bad_request_returns_error_and_connection_remains_usable(server, payload):
+    with socket.create_connection(("localhost", server.port), timeout=5) as sock:
+        reader = sock.makefile()
+        good = {"type": "structured_command", "command": "refresh"}
+        sock.sendall((json.dumps(payload) + "\n" + json.dumps(good) + "\n").encode())
+        assert json.loads(reader.readline())["status"] == "error"
+        assert json.loads(reader.readline())["status"] == "success"
+
+
+@pytest.mark.parametrize("terminated", [False, True])
+def test_oversized_request_is_rejected(server, plugin, monkeypatch, terminated):
+    monkeypatch.setattr(plugin, "MAX_MESSAGE_BYTES", 128)
+    with socket.create_connection(("localhost", server.port), timeout=5) as sock:
+        sock.sendall(b"x" * 129 + (b"\n" if terminated else b""))
+        reader = sock.makefile()
+        reply = json.loads(reader.readline())
+        assert reply["status"] == "error"
+        assert "size limit" in reply["message"]
+        assert reader.readline() == ""
+
+
+def test_client_limit_recovers_after_disconnect(server, plugin, monkeypatch):
+    import time
+
+    monkeypatch.setattr(plugin, "MAX_CLIENTS", 1)
+    good = {"type": "structured_command", "command": "refresh"}
+    with socket.create_connection(("localhost", server.port), timeout=5) as first:
+        first.sendall((json.dumps(good) + "\n").encode())
+        with first.makefile() as reader:
+            assert json.loads(reader.readline())["status"] == "success"
+        with socket.create_connection(("localhost", server.port), timeout=5) as second:
+            with second.makefile() as reader:
+                assert "Too many" in json.loads(reader.readline())["message"]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with server._clients_lock:
+            if not server._clients:
+                break
+        time.sleep(0.01)
+    assert send(server.port, good)["status"] == "success"
+
+
+def test_handler_exception_returns_error_without_losing_connection(server):
+    def broken(command, args):
+        raise ValueError("bad parameter")
+
+    server.command_callback = broken
+    reply = send(server.port, {"type": "structured_command", "command": "show"})
+    assert reply["status"] == "error"
+    assert "bad parameter" in reply["message"]

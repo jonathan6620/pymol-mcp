@@ -94,8 +94,9 @@ class TestSelector:
             "byres (chain C within 4 of chain E)"
         )
 
-    def test_raw_wins_over_other_fields(self):
-        assert Selector(chain="A", raw="all").to_selection() == "all"
+    def test_raw_cannot_hide_other_fields(self):
+        with pytest.raises(ValueError, match="cannot be combined"):
+            Selector(chain="A", raw="all")
 
     def test_empty_selector_rejected(self):
         with pytest.raises(ValueError, match="empty selector"):
@@ -137,3 +138,19 @@ class TestAtomNames:
 
     def test_atom_names_alone_is_not_an_empty_selector(self):
         assert Selector(atom_names=["CA"]).to_selection() == "name CA"
+
+
+@pytest.mark.parametrize("fields", [
+    {"object": "model", "chains": ["A"]},
+    {"chain": "A or all"},
+    {"object": "all"},
+    {"chain": " "},
+    {"object": "model", "residues": []},
+    {"atom_names": ["CA or all"]},
+    {"object": "model", "atom_names": []},
+    {"raw": "all", "residues": []},
+    {"residue_range": {"start": 1, "end": 5, "step": 2}},
+])
+def test_selector_rejects_ambiguous_filters(fields):
+    with pytest.raises(ValueError):
+        Selector(**fields)
