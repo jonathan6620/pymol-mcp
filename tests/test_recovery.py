@@ -39,11 +39,11 @@ def history(tmp_path):
 def kill_listener(server):
     """Break the listening socket so accept() raises, as a crash would."""
     server.socket.close()
-    for _ in range(50):
-        if not server.running:
-            return
-        time.sleep(0.1)
-    raise AssertionError("accept loop did not notice the broken socket")
+    # running becomes False before the worker records its failure. Wait for
+    # the whole thread so callers see completed diagnostics, not just shutdown.
+    server.thread.join(timeout=5)
+    assert not server.thread.is_alive(), "accept loop did not finish shutdown"
+    assert not server.running
 
 
 class TestListeningIsDerivedNotTracked:
