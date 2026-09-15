@@ -969,3 +969,112 @@ def test_translate_changes_only_the_requested_state(tmp_path):
     proc = subprocess.run([PYMOL, "-cq", str(script)], capture_output=True,
                           text=True, timeout=60)
     assert "STATE_OK" in proc.stdout, proc.stdout + proc.stderr
+
+
+@requires_pymol
+def test_movie_mapping_render_modes_and_replay(instances, tmp_path, monkeypatch):
+    from pymol_mcp.api import MovieSegment
+
+    inst = _one_instance(instances)
+    source = tmp_path / "trajectory.pdb"
+    source.write_text(
+        "MODEL        1\n"
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000"
+        "  1.00 20.00           C\n"
+        "ENDMDL\nMODEL        2\n"
+        "ATOM      1  CA  ALA A   1       2.000   0.000   0.000"
+        "  1.00 20.00           C\n"
+        "ENDMDL\nEND\n"
+    )
+    reply = inst.send("load", {"filename": str(source), "object": "trajectory"},
+                      replay=f"load {source}, trajectory")
+    assert reply["status"] == "success", reply
+    info = server._configure_movie(
+        [MovieSegment(start=2, end=1), MovieSegment(start=2)],
+        fps=12, loop=False, instance=inst.port,
+    )
+    assert info.frame_states == [2, 1, 2]
+    assert info.current_frame == 1 and info.current_state == 2
+    assert info.fps == 12 and not info.loop and not info.playing
+    assert info.objects[0].states == 2
+    assert not info.has_frame_commands and not info.has_camera_keyframes
+    inst.send("show", {"representation": "spheres", "selection": "trajectory"})
+    inst.send("zoom", {"selection": "trajectory", "buffer": 4})
+    before = inst.send("inspect_movie", {})["result"]["data"]
+    # Observe the actual state at every native png, not merely commands sent.
+    connection = server.get_pymol_connection(inst.port)
+    original_send = connection.send_command
+    seen = []
+
+    def observing_send(command, args, **kwargs):
+        if command == "png":
+            current = original_send("inspect_movie", {})["result"]["data"]
+            seen.append(current["current_state"])
+        return original_send(command, args, **kwargs)
+
+    monkeypatch.setattr(connection, "send_command", observing_send)
+    for mode, expected in [("states", [1, 2]), ("timeline", [2, 1])]:
+        seen.clear()
+        meta, path = server._render_movie(
+            None, str(tmp_path / f"{mode}.gif"), mode=mode, frames=2,
+            width=64, height=64, fps=10, ray=True, instance=inst.port,
+        )
+        assert seen == expected
+        assert path.exists() and meta.duration_ms == 200
+        after = inst.send("inspect_movie", {})["result"]["data"]
+        for key in ("current_frame", "current_state", "playing", "frame_states"):
+            assert after[key] == before[key]
+        assert after["view"] == pytest.approx(before["view"])
+    reply = inst.send("control_movie", {"action": "seek", "frame": 2})
+    assert reply["result"]["data"]["current_state"] == 1
+    assert not reply["result"]["data"]["playing"]
+    history = inst.send("get_history", {})["result"]["data"]
+    replay = Path(history["script"])
+    verify = tmp_path / "verify_movie.py"
+    verify.write_text(
+        "from pymol import cmd\n"
+        f"cmd.do('@{replay}')\n"
+        "assert cmd.get_session()['movie'][4] == [1,0,1]\n"
+        "assert cmd.get_frame() == 2 and cmd.get_state() == 1\n"
+        "assert cmd.get_setting_float('movie_fps') == 12\n"
+        "assert not cmd.get_setting_int('movie_loop')\n"
+        "print('MOVIE_REPLAY_OK')\n"
+    )
+    proc = subprocess.run([PYMOL, "-cq", str(verify)], capture_output=True,
+                          text=True, timeout=60)
+    assert "MOVIE_REPLAY_OK" in proc.stdout, proc.stdout + proc.stderr
+
+
+@requires_pymol
+def test_movie_inspection_detects_and_configuration_clears_keyframes(tmp_path):
+    script = tmp_path / "movie_keyframes.py"
+    script.write_text(
+        "import importlib.util\n"
+        "from pymol import cmd\n"
+        "spec = importlib.util.spec_from_file_location("
+        f"'plugin', {str(PLUGIN_PATH)!r})\n"
+        "plugin = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(plugin)\n"
+        "dispatch = plugin.build_command_dispatcher(cmd)\n"
+        "cmd.fragment('ala')\n"
+        "cmd.mset('1 x3')\n"
+        "cmd.mview('store', 1, object='ala')\n"
+        "cmd.mview('store', 1)\n"
+        "cmd.mdo(2, 'set cartoon_transparency, 0.9')\n"
+        "before = cmd.get_view()\n"
+        "info = dispatch['inspect_movie']({})\n"
+        "assert info['has_frame_commands']\n"
+        "assert info['has_camera_keyframes']\n"
+        "assert info['has_object_keyframes']\n"
+        "assert cmd.get_view() == before\n"
+        "assert cmd.get_frame() == 1\n"
+        "assert cmd.get_setting_float('cartoon_transparency') == 0\n"
+        "result = dispatch['configure_movie']({'states': [1,1], 'fps': 10})\n"
+        "assert not result['has_frame_commands']\n"
+        "assert not result['has_camera_keyframes']\n"
+        "assert not result['has_object_keyframes']\n"
+        "print('KEYFRAMES_OK')\n"
+    )
+    proc = subprocess.run([PYMOL, "-cq", str(script)], capture_output=True,
+                          text=True, timeout=60)
+    assert "KEYFRAMES_OK" in proc.stdout, proc.stdout + proc.stderr

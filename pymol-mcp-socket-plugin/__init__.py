@@ -252,7 +252,18 @@ def _record_history(command_name, args, source, result, replay=None):
                 return
 
             ok = not (isinstance(result, dict) and result.get("executed") is False)
-            if command_name == "clear_selections" and replay == "clear_selections":
+            if command_name == "configure_movie" and ok:
+                states = " ".join(str(s) for s in args["states"])
+                replay_sources = ["mstop", "mview purge, object=all", "mset " + states,
+                                  "set movie_fps, %d" % args.get("fps", 10),
+                                  "set movie_loop, %d" % args.get("loop", True),
+                                  "frame 1"]
+            elif command_name == "control_movie" and ok:
+                action = args["action"]
+                replay_sources = (["mstop", "frame %d" % args["frame"]]
+                                  if action == "seek" else
+                                  ["mplay" if action == "play" else "mstop"])
+            elif command_name == "clear_selections" and replay == "clear_selections":
                 data = result.get("data", {}) if isinstance(result, dict) else {}
                 replay_sources = [
                     "delete %s" % name for name in data.get("deleted", [])
@@ -1141,6 +1152,96 @@ def build_command_dispatcher(cmd):
             iterations = 1
         return cmd.sculpt_iterate(args.get("object", "all"), iterations)
 
+    def _inspect_movie(args):
+        # Public PyMOL has no frame-to-state query. Read its session movie
+        # record once, in memory; never return or persist molecular payloads.
+        # MovieAsPyList: length, matrix flag, matrix, playing, sequence,
+        # frame commands, camera keyframes. Validate this versioned layout.
+        session = cmd.get_session(cache=0, binary=0, compress=0, version=0)
+        movie = session.get("movie")
+        if not isinstance(movie, (list, tuple)) or len(movie) < 7:
+            raise ValueError("unsupported PyMOL movie metadata layout")
+        count = movie[0]
+        sequence = movie[4] or []
+        if not isinstance(count, int) or count < 0 or len(sequence) != count:
+            raise ValueError("invalid PyMOL movie state mapping")
+        if any(not isinstance(s, int) or s < 0 for s in sequence):
+            raise ValueError("invalid PyMOL movie state mapping")
+        object_names = cmd.get_names("objects")
+        # CObject session header slot 13 carries object motion keyframes.
+        # Unknown object layouts are conservatively treated as motion-bearing.
+        object_motion = False
+        for entry in session.get("names", []):
+            if not entry or entry[0] not in object_names:
+                continue
+            try:
+                header = entry[5][0]
+                object_motion |= bool(header[13])
+            except (IndexError, TypeError):
+                object_motion = True
+        enabled = set(cmd.get_names("objects", enabled_only=1))
+        objects = [
+            {"name": name, "states": int(cmd.count_states(name)),
+             "enabled": name in enabled,
+             "state_setting": int(cmd.get_setting_int("state", name))}
+            for name in cmd.get_names("objects")
+            if cmd.get_type(name) == "object:molecule"
+        ]
+        return {
+            "frame_count": count,
+            "frame_states": [s + 1 for s in sequence[:10000]],
+            "mapping_truncated": count > 10000,
+            "current_frame": int(cmd.get_frame()),
+            "current_state": int(cmd.get_state()),
+            "fps": float(cmd.get_setting_float("movie_fps")),
+            "loop": bool(cmd.get_setting_int("movie_loop")),
+            "playing": bool(cmd.get_movie_playing()),
+            "objects": objects,
+            "view": [float(v) for v in cmd.get_view()],
+            "has_frame_commands": any(movie[5] or []),
+            "has_object_keyframes": object_motion,
+            "has_camera_keyframes": any(any(v) for v in (movie[6] or []) if v),
+        }
+
+    def _configure_movie(args):
+        states = args.get("states")
+        fps = args.get("fps", 10)
+        loop = args.get("loop", True)
+        if (not isinstance(states, list) or not 1 <= len(states) <= 10000
+                or any(type(s) is not int or not 1 <= s <= 10000 for s in states)):
+            raise ValueError("movie needs 1 to 10000 positive state indices")
+        if type(fps) is not int or not 1 <= fps <= 60 or type(loop) is not bool:
+            raise ValueError("fps must be 1 to 60 and loop must be boolean")
+        available = cmd.count_states("all")
+        if max(states) > available:
+            raise ValueError("timeline references an unavailable object state")
+        # Validate everything before replacing a timeline or stopping playback.
+        cmd.mstop()
+        cmd.mview("purge", object="all")
+        cmd.mset(" ".join(str(s) for s in states), freeze=1)
+        cmd.set("movie_fps", fps)
+        cmd.set("movie_loop", int(loop))
+        cmd.frame(1, trigger=0)
+        return _inspect_movie({})
+
+    def _control_movie(args):
+        action = args.get("action")
+        if action not in ("play", "pause", "seek"):
+            raise ValueError("movie action must be play, pause, or seek")
+        frame = args.get("frame")
+        if action == "seek":
+            if type(frame) is not int or not 1 <= frame <= cmd.count_frames():
+                raise ValueError("frame is outside the available timeline")
+            cmd.mstop()
+            cmd.frame(frame, trigger=0)
+        elif frame is not None:
+            raise ValueError("frame is only valid for seek")
+        elif action == "play":
+            cmd.mplay()
+        else:
+            cmd.mstop()
+        return _inspect_movie({})
+
     def _scene(args):
         return cmd.scene(args.get("key", ""), args.get("action", "recall"))
 
@@ -1163,6 +1264,8 @@ def build_command_dispatcher(cmd):
                 frame = int(frame)
             except (ValueError, TypeError):
                 frame = 1
+            if args.get("trigger") == 0:
+                return cmd.frame(frame, trigger=0)
             return cmd.frame(frame)
         return cmd.frame()
 
@@ -2101,6 +2204,9 @@ def build_command_dispatcher(cmd):
         "get_representations": _get_representations,
         "inspect_setting": _inspect_setting,
         "translate": _translate,
+        "inspect_movie": _inspect_movie,
+        "configure_movie": _configure_movie,
+        "control_movie": _control_movie,
         "unset": _unset,
         "enable": _enable,
         "disable": _disable,

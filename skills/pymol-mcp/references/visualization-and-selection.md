@@ -842,24 +842,61 @@ commas.
 
 ## Animations
 
-`mcp__pymol__render_movie` returns an animated GIF as an image block, so it
-appears inline. MCP has no video content type; a GIF is an image, which is the
-whole reason this works. Pass a `.webp` filename for much better compression if
-the client renders animated WebP.
+Start with `inspect_movie`: it reports the frame-to-state mapping, current frame
+and state, FPS, loop/playback status, and state counts for each molecular object.
+Movie frames are not necessarily object states: holds and reversed sequences
+make that distinction important. Inspection reads session metadata in memory;
+avoid polling it once per rendered frame. Mapping output is capped at 10000
+frames with `mapping_truncated` indicating a larger timeline.
+
+`configure_movie` replaces the existing timeline and its movie commands and
+keyframes. It stops playback and selects frame 1. Each segment has `start`, an
+optional inclusive `end`, positive `stride`, and `hold` (frames per state).
+Descending ranges play backwards. A single-state segment with a larger `hold`
+creates a pause; `ping_pong=true` appends a reversed sequence without repeating
+the two endpoint frames. Configuration is limited to 10000 frames.
+
+```
+configure_movie(segments=[{"start": 1, "end": 101}], fps=20, loop=True)
+configure_movie(segments=[{"start": 1, "hold": 10},
+                          {"start": 1, "end": 101, "stride": 2},
+                          {"start": 101, "hold": 10}], fps=20)
+control_movie(action="play")
+control_movie(action="pause")
+control_movie(action="seek", frame=20)
+```
+
+Seek pauses playback and does not execute frame command strings. Add
+`instance=<port>` to each call when several PyMOL instances are running.
+
+`render_movie` exports GIF or animated WebP:
 
 ```
 render_movie(filename="/tmp/spin.gif", mode="spin", frames=24, width=480)
-render_movie(filename="/tmp/traj.gif", mode="states", frames=20, start_state=1)
+render_movie(filename="/tmp/states.gif", mode="states", frames=20, start_state=1)
+render_movie(filename="/tmp/timeline.gif", mode="timeline", frames=101,
+             start_frame=1, fps=20)
 ```
 
-`mode="spin"` turns the camera a full 360° about `axis`; `mode="states"` steps
-through object states, for trajectories and NMR ensembles.
+- `spin` rotates the camera through a full loop.
+- `states` advances the global object state directly, independently of `mset`.
+  Per-object state settings still apply; check these if one object stays fixed.
+- `timeline` follows the existing movie's frame mapping. Export currently accepts
+  state mappings only; frame commands and camera/object keyframes are rejected.
 
-Defaults are small and un-raytraced on purpose. A ray-traced frame takes
-seconds, so `ray=True` with 24 frames is a minute of waiting — worth it for a
-final, not for a look. Caps apply at 120 frames, 4 MP per frame and 8 MB
-encoded; when one bites, the metadata says so in `truncated`, `dropped_frames`
-and `note` rather than quietly returning a shorter movie.
+Rendering pauses playback and restores the initial view, frame, global state
+and playback status, including after a render failure while the connection is
+usable. Internal render changes do not enter the replay script. Failed exports
+preserve an existing destination file. Defaults are small and un-raytraced for
+quick previews; use `ray=True` for a final ray-traced export.
+
+Caps apply at 120 rendered frames, 4 MP per frame and 8 MB encoded. Sampling spans
+the whole requested interval and preserves duration rather than truncating the
+ending or accelerating playback. `duration_ms` gives encoded duration; `fps` is
+the requested source rate and `effective_fps` reflects the encoded frame count.
+GIF timing rounds to centiseconds. Encoders may combine identical frames into
+one longer hold. Use `truncated`, `dropped_frames`, `rendered_frames` and `note`
+to see when sampling or downscaling was necessary.
 
 ## Housekeeping
 

@@ -474,6 +474,21 @@ See [the local log review](docs/log-review.md) for the evidence and remaining
 opportunities. Tests disable personal history by default; history tests use
 temporary directories.
 
+### Movie timelines
+
+Use `inspect_movie` to distinguish timeline frames from molecular states.
+`configure_movie` replaces a timeline using segments with `start`, `end`,
+`stride`, and `hold`; it also accepts `fps`, `loop`, and `ping_pong`.
+`control_movie` plays, pauses, or seeks a frame and reports the resulting state.
+
+`render_movie` now distinguishes `states` from `timeline` mode (`start_state`
+versus `start_frame`). It restores the starting view, frame, global state and
+playback after rendering, and preserves duration when sampling or thinning
+frames. GIF/WebP exports are verified before replacing the destination.
+State-mapped timelines are supported; timelines with commands or camera/object
+keyframes are detected and rejected for export. See the
+[animation examples](skills/pymol-mcp/references/visualization-and-selection.md#animations).
+
 ## Credits
 
 This project is derived from [vrtejus/pymol-mcp](https://github.com/vrtejus/pymol-mcp).

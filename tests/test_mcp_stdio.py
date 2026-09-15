@@ -30,6 +30,8 @@ def test_real_stdio_initialize_discover_and_call():
                     names = {tool.name for tool in listing.tools}
                     expected = {"list_commands", "render_png", "count", "label_text"}
                     expected.update({"translate", "set_setting"})
+                    expected.update({"inspect_movie", "configure_movie",
+                                     "control_movie"})
                     assert expected <= names
                     result = await session.call_tool(
                         "list_commands", {"filter": "fetch"}

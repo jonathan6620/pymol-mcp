@@ -39,6 +39,7 @@ build-backend = "hatchling.build"
 packages = ["src/pymol_mcp"]
 
 [tool.pyright]
+pythonVersion = "3.10"
 include = ["src/pymol_mcp"]
 venvPath = "."
 venv = ".venv"

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import io
 import json
 import logging
 import os
@@ -27,7 +26,9 @@ from pymol_mcp.api import (
     Gaps,
     History,
     Measurement,
+    MovieInfo,
     MovieMeta,
+    MovieSegment,
     RenderMeta,
     Representations,
     ResidueList,
@@ -73,14 +74,17 @@ INTROSPECTION_COMMANDS = frozenset(
         "get_representations",
         "inspect_setting",
         "translate",
+        "inspect_movie",
+        "configure_movie",
+        "control_movie",
     }
 )
 
 # These calls are useful in the audit log but do not alter a scene. They must
 # never be emitted into the replay script.
-READ_ONLY_COMMANDS = (INTROSPECTION_COMMANDS - {"translate"}) | frozenset(
-    {"get_view", "get_setting"}
-)
+READ_ONLY_COMMANDS = (
+    INTROSPECTION_COMMANDS - {"translate", "configure_movie", "control_movie"}
+) | frozenset({"get_view", "get_setting"})
 
 
 PYMOL_COMMANDS: dict[str, CommandDef] = {
@@ -2478,45 +2482,136 @@ MOVIE_MAX_PIXELS = 4_000_000
 MOVIE_MAX_BYTES = 8_000_000
 
 
-def _encode_animation(
-    frame_paths: list[Path], destination: Path, fps: int, fmt: str
-) -> int:
-    """Encode stills into an animation. Returns the byte size written.
+def _movie_states(segments: list[MovieSegment], ping_pong: bool) -> list[int]:
+    if not segments or len(segments) > 100:
+        raise ValueError("provide 1 to 100 movie segments")
+    states: list[int] = []
+    for segment in segments:
+        segment = MovieSegment.model_validate(segment)
+        end = segment.end if segment.end is not None else segment.start
+        direction = 1 if end >= segment.start else -1
+        run = range(segment.start, end + direction, direction * segment.stride)
+        if len(states) + len(run) * segment.hold > 10000:
+            raise ValueError("timeline exceeds 10000 frames")
+        states.extend(state for state in run for _ in range(segment.hold))
+    if ping_pong:
+        states += states[-2:0:-1]
+    if len(states) > 10000:
+        raise ValueError("timeline exceeds 10000 frames")
+    return states
 
-    Pillow is a server dependency rather than borrowed from PyMOL's environment:
-    PyMOL builds do not guarantee it, and the server already reads the files
-    PyMOL writes (see _png_dimensions).
+
+def _configure_movie(
+    segments: list[MovieSegment], fps: int = 10, loop: bool = True,
+    ping_pong: bool = False, instance: int | None = None,
+) -> MovieInfo:
+    states = _movie_states(segments, ping_pong)
+    return MovieInfo.model_validate(_introspect(
+        "configure_movie", {"states": states, "fps": fps, "loop": loop}, instance,
+    ))
+
+
+@mcp.tool()
+def inspect_movie(ctx: Context, instance: int | None = None) -> MovieInfo:
+    """Inspect frame-to-state mapping, playback, FPS, and per-object states.
+
+    Read-only; does not seek frames. Mapping is limited to the first 10000
+    frames, with mapping_truncated reporting larger timelines. Object state
+    overrides can pin an object independently of the global movie state.
     """
+    return MovieInfo.model_validate(_introspect("inspect_movie", {}, instance))
+
+
+@mcp.tool()
+def configure_movie(
+    ctx: Context, segments: list[MovieSegment], fps: int = 10,
+    loop: bool = True, ping_pong: bool = False, instance: int | None = None,
+) -> MovieInfo:
+    """Replace the movie timeline with typed state ranges, pauses, and reversal.
+
+    Each segment has start, optional inclusive end, stride, and hold (frames
+    per state). A one-state segment with hold=10 is a ten-frame pause. Descending
+    ranges play in reverse. ping_pong appends the reverse without repeating the
+    two endpoint frames. Replaces existing movie commands/keyframes, stops
+    playback, and selects frame 1. At most 10000 frames; states must exist.
+    """
+    return _configure_movie(segments, fps, loop, ping_pong, instance)
+
+
+@mcp.tool()
+def control_movie(
+    ctx: Context, action: Literal["play", "pause", "seek"],
+    frame: int | None = None, instance: int | None = None,
+) -> MovieInfo:
+    """Play, pause, or seek a movie and report its resulting state.
+
+    Seek requires a one-based frame and pauses playback; it does not execute
+    per-frame command strings. Use inspect_movie to distinguish frames/states.
+    """
+    return MovieInfo.model_validate(_introspect(
+        "control_movie", {"action": action, "frame": frame}, instance,
+    ))
+
+
+def _encode_animation(
+    frame_paths: list[Path], destination: Path, fps: int, fmt: str,
+    durations_ms: list[int] | None = None,
+) -> int:
+    """Encode sampled stills, preserving their original timeline durations."""
     from PIL import Image as PILImage
 
-    frames = [PILImage.open(p).convert("RGB") for p in frame_paths]
-    if not frames:
-        raise RuntimeError("No frames were rendered")
-    buffer = io.BytesIO()
-    frames[0].save(
-        buffer,
-        format=fmt,
-        save_all=True,
-        append_images=frames[1:],
-        duration=max(1, round(1000 / fps)),
-        loop=0,
-        optimize=True,
-    )
-    data = buffer.getvalue()
-    destination.write_bytes(data)
-    return len(data)
+    frames = []
+    try:
+        for path in frame_paths:
+            with PILImage.open(path) as source:
+                frames.append(source.convert("RGB"))
+        if not frames:
+            raise RuntimeError("No frames were rendered")
+        frames[0].save(
+            destination, format=fmt, save_all=True, append_images=frames[1:],
+            duration=durations_ms or max(1, round(1000 / fps)),
+            loop=0, optimize=True,
+        )
+        return destination.stat().st_size
+    finally:
+        for frame in frames:
+            frame.close()
 
 
-def _verify_animation(path: Path, expected_frames: int) -> None:
-    """Reopen and count frames. A successful save is not proof of content."""
+def _verify_animation(
+    path: Path, expected_frames: int, expected_duration_ms: int | None = None,
+) -> tuple[int, int]:
+    """Check duration as well as content; encoders may merge identical frames."""
     from PIL import Image as PILImage
 
+    duration = 0
     with PILImage.open(path) as check:
         actual = getattr(check, "n_frames", 1)
-    if actual != expected_frames:
+        for index in range(actual):
+            check.seek(index)
+            check.load()  # WebP exposes timing after decoding the frame.
+            duration += check.info.get("duration", 0)
+    if actual < 1 or actual > expected_frames:
+        raise RuntimeError("Animation has an invalid frame count")
+    if expected_duration_ms is not None and duration != expected_duration_ms:
         raise RuntimeError(
-            f"Animation wrote {actual} frames, expected {expected_frames}: {path}"
+            f"Animation duration is {duration} ms, expected {expected_duration_ms} ms"
         )
+    return actual, duration
+
+
+def _sample_indices(count: int, limit: int) -> list[int]:
+    if count <= limit:
+        return list(range(count))
+    return [round(i * (count - 1) / (limit - 1)) for i in range(limit)]
+
+
+def _frame_durations(indices: list[int], total: int, fps: int, fmt: str) -> list[int]:
+    # GIF uses centiseconds. Round cumulative times rather than each duration
+    # independently so neither frame caps nor non-divisor FPS accumulate drift.
+    quantum = 10 if fmt == "GIF" else 1
+    ticks = [round(i * 1000 / fps / quantum) * quantum for i in indices + [total]]
+    return [b - a for a, b in zip(ticks, ticks[1:])]
 
 
 def _render_movie(
@@ -2531,104 +2626,146 @@ def _render_movie(
     ray: bool = False,
     start_state: int = 1,
     instance: int | None = None,
+    start_frame: int = 1,
 ) -> tuple[MovieMeta, Path]:
-    """Render frames by driving existing commands, then encode them."""
-    if mode not in ("spin", "states"):
-        raise ValueError("mode must be 'spin' or 'states'")
+    """Render a sampled movie and restore view, state, frame, and playback."""
+    if mode not in ("spin", "states", "timeline"):
+        raise ValueError("mode must be 'spin', 'states', or 'timeline'")
     if axis not in ("x", "y", "z"):
         raise ValueError("axis must be x, y or z")
-    if frames < 2:
-        raise ValueError("A movie needs at least 2 frames")
-    if fps < 1 or fps > 60:
+    if type(frames) is not int or not 2 <= frames <= 10000:
+        raise ValueError("A movie needs at least 2 frames and at most 10000")
+    if type(fps) is not int or not 1 <= fps <= 60:
         raise ValueError("fps must be between 1 and 60")
     if not (1 <= width <= 4000 and 1 <= height <= 4000):
         raise ValueError("Width and height must each be between 1 and 4000")
+    if (type(start_state) is not int or start_state < 1
+            or type(start_frame) is not int or start_frame < 1):
+        raise ValueError("start_state and start_frame must be positive integers")
+    if mode != "timeline" and start_frame != 1:
+        raise ValueError("start_frame is only used in timeline mode")
+    if mode != "states" and start_state != 1:
+        raise ValueError("start_state is only used in states mode")
 
     path = Path(filename).expanduser().resolve()
     fmt = {".gif": "GIF", ".webp": "WEBP"}.get(path.suffix.lower())
     if fmt is None:
         raise ValueError("render_movie requires a .gif or .webp filename")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = get_pymol_connection(instance)
+
+    def send(command: str, args: dict[str, Any]) -> dict[str, Any]:
+        response = connection.send_command(command, args)
+        _direct_output(response)
+        return response
+
+    snapshot_response = send("inspect_movie", {})
+    snapshot = MovieInfo.model_validate(snapshot_response["result"]["data"])
+    if mode == "states":
+        available = max(
+            (obj.states for obj in snapshot.objects if obj.enabled), default=0
+        )
+        if start_state + frames - 1 > available:
+            raise ValueError("state range exceeds the enabled objects' states")
+    if mode == "timeline":
+        if start_frame + frames - 1 > snapshot.frame_count:
+            raise ValueError("requested frame range exceeds the movie timeline")
+        if (snapshot.has_frame_commands or snapshot.has_camera_keyframes
+                or snapshot.has_object_keyframes):
+            raise ValueError("timeline export currently supports state mappings only")
 
     notes: list[str] = []
-    dropped = 0
-    if frames > MOVIE_MAX_FRAMES:
-        dropped = frames - MOVIE_MAX_FRAMES
-        notes.append(f"frame count capped at {MOVIE_MAX_FRAMES} (dropped {dropped})")
-        frames = MOVIE_MAX_FRAMES
+    indices = _sample_indices(frames, MOVIE_MAX_FRAMES)
+    if len(indices) < frames:
+        notes.append(
+            f"frame count capped at {MOVIE_MAX_FRAMES}; full duration retained"
+        )
     if width * height > MOVIE_MAX_PIXELS:
         scale = (MOVIE_MAX_PIXELS / (width * height)) ** 0.5
         width, height = max(1, int(width * scale)), max(1, int(height * scale))
         notes.append(f"downscaled to {width}x{height} to stay under the pixel cap")
 
-    connection = get_pymol_connection(instance)
-    step = 360.0 / frames
+    path.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=f".{path.stem}-frames-", dir=path.parent))
-    frame_paths: list[Path] = []
+    encoded = work / ("encoded" + path.suffix)
+    samples: list[tuple[int, Path]] = []
+    rendered_count = len(indices)
     try:
-        for index in range(frames):
-            if mode == "spin":
-                if index:  # first frame is the current view
-                    connection.send_command(
-                        "turn", {"axis": axis, "angle": step},
-                        source=f"turn {axis}, {step:g}",
-                        replay=f"turn {axis}, {step:g}",
-                    )
-            else:
-                connection.send_command(
-                    "frame", {"frame_number": start_state + index},
-                    source=f"frame {start_state + index}",
-                    replay=f"frame {start_state + index}",
+        try:
+            send("mstop", {})
+            previous_index = 0
+            for index in indices:
+                if mode == "spin" and index:
+                    send("turn", {"axis": axis,
+                                  "angle": (index - previous_index) * 360.0 / frames})
+                elif mode == "states":
+                    # Setting the global state bypasses mset frame mappings.
+                    send("set", {"setting": "state", "value": start_state + index})
+                elif mode == "timeline":
+                    send("frame", {"frame_number": start_frame + index, "trigger": 0})
+                previous_index = index
+                frame_path = work / f"f{index:05d}.png"
+                response = connection.send_command(
+                    "png", {"filename": str(frame_path), "width": width,
+                            "height": height, "ray": int(ray), "quiet": 1},
+                    source="typed render_movie frame",
                 )
-            frame_path = work / f"f{index:04d}.png"
-            response = connection.send_command(
-                "png",
-                {
-                    "filename": str(frame_path),
-                    "width": width,
-                    "height": height,
-                    "ray": int(ray),
-                    "quiet": 1,
-                },
-                source="typed render_movie frame",
-            )
-            _direct_output(response)
-            if not frame_path.exists():
-                raise RuntimeError(f"PyMOL did not write frame {index}: {frame_path}")
-            frame_paths.append(frame_path)
+                _direct_output(response)
+                if not frame_path.exists():
+                    raise RuntimeError(
+                        f"PyMOL did not write frame {index}: {frame_path}"
+                    )
+                samples.append((index, frame_path))
+        finally:
+            # Try every restoration even if an earlier step failed. A dropped
+            # connection can prevent restoration; never report success then.
+            errors = []
+            restore: list[tuple[str, dict[str, Any]]] = []
+            if mode == "timeline":
+                restore.append(("frame", {"frame_number": snapshot.current_frame,
+                                          "trigger": 0}))
+            restore.extend([
+                ("set", {"setting": "state", "value": snapshot.current_state}),
+                ("set_view", {"view": snapshot.view}),
+            ])
+            if snapshot.playing:
+                restore.append(("mplay", {}))
+            for command, args in restore:
+                try:
+                    send(command, args)
+                except Exception as error:
+                    errors.append(str(error))
+            if errors:
+                raise RuntimeError(
+                    "Could not restore movie state: " + "; ".join(errors)
+                )
 
-        size = _encode_animation(frame_paths, path, fps, fmt)
-        while size > MOVIE_MAX_BYTES and len(frame_paths) > 2:
-            # Drop every other frame rather than truncating the end, so the
-            # motion still completes -- it just plays coarser.
-            frame_paths = frame_paths[::2]
-            dropped = frames - len(frame_paths)
-            size = _encode_animation(frame_paths, path, fps, fmt)
-            notes.append(
-                f"thinned to {len(frame_paths)} frames to stay under the size cap"
+        while True:
+            durations = _frame_durations([i for i, _ in samples], frames, fps, fmt)
+            size = _encode_animation(
+                [p for _, p in samples], encoded, fps, fmt, durations
             )
-        _verify_animation(path, len(frame_paths))
+            if size <= MOVIE_MAX_BYTES:
+                break
+            if len(samples) <= 2:
+                raise RuntimeError("Animation exceeds size cap even with two frames")
+            samples = [samples[i] for i in _sample_indices(len(samples),
+                                                         max(2, len(samples) // 2))]
+            notes.append(f"thinned to {len(samples)} frames; full duration retained")
+        actual_frames, duration = _verify_animation(
+            encoded, len(samples), sum(durations)
+        )
+        os.replace(encoded, path)
     finally:
-        for frame_path in frame_paths:
-            frame_path.unlink(missing_ok=True)
-        for leftover in work.glob("*.png"):
-            leftover.unlink(missing_ok=True)
-        work.rmdir()
+        shutil.rmtree(work)
 
-    meta = MovieMeta(
-        path=str(path),
-        mode=mode,  # type: ignore[arg-type]
-        frames=len(frame_paths),
-        fps=fps,
-        width=width,
-        height=height,
-        bytes=size,
-        ray=ray,
-        truncated=bool(notes),
-        dropped_frames=dropped,
+    return MovieMeta(
+        path=str(path), mode=mode, frames=actual_frames, fps=fps, width=width,
+        height=height, bytes=size, ray=ray, truncated=bool(notes),
+        dropped_frames=frames - len(samples), requested_frames=frames,
+        rendered_frames=rendered_count, duration_ms=duration,
+        effective_fps=actual_frames * 1000 / duration,
         note="; ".join(notes) or None,
-    )
-    return meta, path
+    ), path
 
 
 @mcp.tool()
@@ -2644,11 +2781,18 @@ def render_movie(
     ray: bool = False,
     start_state: int = 1,
     instance: int | None = None,
+    start_frame: int = 1,
 ) -> Annotated[CallToolResult, MovieMeta]:
     """Render an animation and return both its metadata and the animation.
 
     `mode="spin"` turns the camera a full 360 degrees about `axis`;
-    `mode="states"` steps through object states from `start_state`.
+    `mode="states"` steps through global object states from `start_state`,
+    independent of an existing movie mapping. Per-object state settings still
+    apply. `mode="timeline"` follows an existing state-mapped timeline from
+    `start_frame`; command/keyframe movies are not yet supported for export.
+    View, frame, global state, and playback are restored even on render failure.
+    Sampling retains requested duration; fps is the source rate and duration_ms
+    and effective_fps describe the encoded animation.
 
     The result comes back as an animated GIF in an ImageContent block, because
     MCP has no video content type but a GIF is an image. Write a `.webp`
@@ -2659,11 +2803,12 @@ def render_movie(
     """
     meta, path = _render_movie(
         ctx, filename, mode, frames, axis, width, height, fps, ray,
-        start_state, instance,
+        start_state, instance, start_frame,
     )
     summary = (
         f"Rendered {meta.frames} frames at {meta.width}x{meta.height}, "
-        f"{meta.fps} fps, {meta.bytes / 1_000_000:.1f} MB -> {meta.path}"
+        f"{meta.duration_ms / 1000:g} seconds, "
+        f"{meta.bytes / 1_000_000:.1f} MB -> {meta.path}"
     )
     if meta.note:
         summary += f" ({meta.note})"

@@ -191,6 +191,16 @@ class _FakeMovieConnection:
 
     def send_command(self, command, args, source=None, replay=None, timeout=None):
         self.commands.append((command, args))
+        if command == "inspect_movie":
+            return {"status": "success", "result": {"executed": True, "data": {
+                "frame_count": 10000, "frame_states": [1],
+                "mapping_truncated": False, "current_frame": 1, "current_state": 1,
+                "fps": 10, "loop": True, "playing": False,
+                "objects": [{"name": "model", "states": 10000, "enabled": True,
+                             "state_setting": 0}],
+                "view": list(range(18)), "has_frame_commands": False,
+                "has_camera_keyframes": False,
+            }}}
         if command == "png":
             from PIL import Image as PILImage
 
@@ -228,8 +238,10 @@ def test_render_movie_steps_states(monkeypatch, tmp_path):
     _, _, conn = _movie(
         monkeypatch, tmp_path, frames=3, mode="states", start_state=5
     )
-    frames = [a["frame_number"] for c, a in conn.commands if c == "frame"]
-    assert frames == [5, 6, 7]
+    states = [a["value"] for c, a in conn.commands
+              if c == "set" and a["setting"] == "state"]
+    assert states == [5, 6, 7, 1]  # final value restores the starting state
+    assert not any(c == "frame" for c, _ in conn.commands)
 
 
 def test_render_movie_output_is_a_real_animation(monkeypatch, tmp_path):

@@ -274,6 +274,9 @@ mistake documented further down.
 | `set_setting` | write a scalar or vector at an explicit setting layer |
 | `unset_setting` | clear a scoped override, at a layer you choose |
 | `get_representations` | what is currently shown, per object and chain |
+| `inspect_movie` | frame-to-state mapping, playback and object state counts |
+| `configure_movie` | replace a timeline using ranges, holds, stride and reversal |
+| `control_movie` | play, pause or seek a timeline frame |
 | `get_history` | what was run, what failed, and where files went |
 | `export_session` | one session's replay, audit, artifacts and final-state evidence as ZIP |
 | `save_file` | save, and get back the path, size and object count |

@@ -453,7 +453,7 @@ class MovieMeta(BaseModel):
     """Metadata for a rendered movie. The GIF travels as ImageContent."""
 
     path: str
-    mode: Literal["spin", "states"]
+    mode: Literal["spin", "states", "timeline"]
     frames: int
     fps: int
     width: int
@@ -462,6 +462,10 @@ class MovieMeta(BaseModel):
     ray: bool
     truncated: bool = False
     dropped_frames: int = 0
+    requested_frames: int = 0
+    rendered_frames: int = 0
+    duration_ms: int = 0
+    effective_fps: float = 0.0
     note: str | None = None
 
 
@@ -470,3 +474,36 @@ class TranslationResult(BaseModel):
     vector: tuple[float, float, float]
     state: int
     atoms: int
+
+
+class MovieSegment(BaseModel):
+    """Inclusive state range; hold repeats each state for that many frames."""
+
+    model_config = ConfigDict(extra="forbid")
+    start: int = Field(ge=1, le=10000, strict=True)
+    end: int | None = Field(default=None, ge=1, le=10000, strict=True)
+    stride: int = Field(default=1, ge=1, le=10000, strict=True)
+    hold: int = Field(default=1, ge=1, le=10000, strict=True)
+
+
+class MovieObject(BaseModel):
+    name: str
+    states: int
+    enabled: bool
+    state_setting: int
+
+
+class MovieInfo(BaseModel):
+    frame_count: int
+    frame_states: list[int]
+    mapping_truncated: bool
+    current_frame: int
+    current_state: int
+    fps: float
+    loop: bool
+    playing: bool
+    objects: list[MovieObject]
+    view: list[float]
+    has_frame_commands: bool
+    has_camera_keyframes: bool
+    has_object_keyframes: bool = False
