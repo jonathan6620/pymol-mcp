@@ -99,6 +99,10 @@ class SocketRequest(BaseModel):
     # Valid one-line PyMOL syntax that reproduces this command's state change.
     # Read-only calls and non-replayable internal operations leave it unset.
     replay: str | None = None
+    # The MCP tool call this command belongs to, so the history can group the
+    # several commands one call may send. Unset for unrecorded internal traffic.
+    call_id: str | None = None
+    tool: str | None = None
 
 
 class SocketResponse(BaseModel):

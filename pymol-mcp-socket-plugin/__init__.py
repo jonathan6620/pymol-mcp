@@ -10,6 +10,7 @@ Based on the concept of the "Rendering Plugin" from Michael Lerner.
 from __future__ import absolute_import, print_function
 
 import ast
+import difflib
 import hashlib
 import json
 import math
@@ -159,6 +160,9 @@ def _history_paths():
     pml = os.path.join(directory, "session-%s.pml" % session_id)
     with open(pml, "a") as fh:
         fh.write("# pymol-mcp session %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        # Which plugin wrote this session. A PyMOL left open across an
+        # upgrade keeps running the old code, and nothing else here says so.
+        fh.write("# Written by: %s\n" % _describe_plugin())
         # Any relative path below was resolved against this directory, so a
         # replay from elsewhere needs it.
         fh.write("# PyMOL working directory: %s\n" % os.getcwd())
@@ -170,6 +174,36 @@ def _history_paths():
     _history_dir, _history_pml = directory, pml
     _log("Recording command history to %s" % directory)
     return _history_dir, _history_pml
+
+
+def _hash_plugin_source():
+    try:
+        with open(__file__, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()[:12]
+    except Exception:
+        return "unknown"
+
+
+# Taken at import, not when first needed: the installed plugin is a symlink
+# into the repository, so reading the file later would describe whatever is on
+# disk by then rather than the code this process actually loaded.
+PLUGIN_FINGERPRINT = _hash_plugin_source()
+
+
+def _describe_plugin():
+    """Name the running plugin source and PyMOL. Never raises.
+
+    A content hash rather than a version number: the package version does not
+    move between commits, and the question this answers is whether the code in
+    this process matches the code in the repository.
+    """
+    try:
+        from pymol import cmd
+
+        version = cmd.get_version()[0]
+    except Exception:
+        version = "unknown"
+    return "plugin %s, PyMOL %s" % (PLUGIN_FINGERPRINT, version)
 
 
 def _replay_source(command_name, replay, args):
@@ -231,8 +265,14 @@ def _replay_source(command_name, replay, args):
     return replay
 
 
-def _record_history(command_name, args, source, result, replay=None):
+def _record_history(command_name, args, source, result, replay=None,
+                    duration_ms=None, call_id=None, tool=None):
     """Append one command to the history files.
+
+    `call_id` and `tool` identify the MCP tool call this command belongs to.
+    One call can send many commands -- a batch, a setting write with its
+    read-back -- and without them adjacent records cannot be told apart from
+    separate calls.
 
     Never raises. A history write failing must not stop PyMOL executing
     commands, so any error disables recording for the rest of the session
@@ -279,8 +319,14 @@ def _record_history(command_name, args, source, result, replay=None):
                 "args": args,
                 "source": source,
                 "ok": ok,
-                "replayable": bool(replay_sources),
+                "replayable": ok and bool(replay_sources),
             }
+            if duration_ms is not None:
+                record["duration_ms"] = duration_ms
+            if call_id:
+                record["call_id"] = call_id
+            if tool:
+                record["tool"] = tool
             if replay_sources:
                 record["replay"] = (
                     replay_sources[0] if len(replay_sources) == 1 else replay_sources
@@ -339,6 +385,79 @@ def _record_event(kind, detail):
     except Exception as e:
         _history_broken = True
         _log("Command history disabled after a write error: %s" % e)
+
+
+# Events the MCP server may ask to have recorded. These describe things only
+# the server sees: input it rejected before sending anything, and the outcome
+# of a movie whose individual frames are not worth a record each.
+CLIENT_EVENTS = frozenset({"rejected", "render_movie"})
+EVENT_TEXT_LIMIT = 2000
+
+
+def _record_client_event(message):
+    """Record a server-reported event in history.jsonl. Returns a result dict.
+
+    The server decides what happened; this decides what may be written. Only
+    allowlisted events and bounded fields are kept, so a client cannot use the
+    history file as an arbitrary sink.
+    """
+    global _history_broken
+
+    event = message.get("event")
+    if event not in CLIENT_EVENTS:
+        return {"executed": False, "error": "Unknown history event: %s" % event}
+    args = message.get("args", {})
+    if not isinstance(args, dict):
+        return {"executed": False, "error": "args must be a JSON object"}
+    if len(json.dumps(args)) > 10 * EVENT_TEXT_LIMIT:
+        args = {"truncated": True}
+    for field in ("detail", "source", "call_id", "tool", "path"):
+        if message.get(field) is not None and not isinstance(message[field], str):
+            return {"executed": False, "error": "%s must be a string" % field}
+    ok = message.get("ok") is True
+
+    if _history_broken:
+        return {"executed": True, "output": "history unavailable"}
+    try:
+        with _history_lock:
+            directory, pml = _history_paths()
+            if directory is None:
+                return {"executed": True, "output": "history disabled"}
+            record = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "session_id": os.path.basename(pml)[len("session-") : -len(".pml")],
+                "ok": ok,
+                "args": args,
+            }
+            if event == "render_movie":
+                # Recorded as a command so get_history(command="render_movie")
+                # finds it, and export_session lists the file it wrote.
+                record["command"] = event
+                record["replayable"] = False
+                if message.get("detail"):
+                    key = "output" if ok else "error"
+                    record[key] = message["detail"][:EVENT_TEXT_LIMIT]
+                if ok and message.get("path"):
+                    record["file"] = {
+                        "path": os.path.abspath(
+                            os.path.expanduser(message["path"])
+                        ),
+                        "direction": "out",
+                    }
+            else:
+                record["event"] = event
+                record["detail"] = (message.get("detail") or "")[:EVENT_TEXT_LIMIT]
+            if message.get("source"):
+                record["source"] = message["source"][:EVENT_TEXT_LIMIT]
+            for field in ("call_id", "tool"):
+                if message.get(field):
+                    record[field] = message[field][:64]
+            with open(os.path.join(directory, "history.jsonl"), "a") as fh:
+                fh.write(json.dumps(record) + "\n")
+    except Exception as e:
+        _history_broken = True
+        _log("Command history disabled after a write error: %s" % e)
+    return {"executed": True, "output": "recorded"}
 
 
 def _report_listener_death(port, error):
@@ -613,6 +732,25 @@ def _check_setting_name(name):
     return name
 
 
+def _require_known_setting(name):
+    """Reject a setting PyMOL does not have, naming the nearest ones.
+
+    PyMOL's own answer is a bare "unknown setting", which leaves the caller
+    guessing at the spelling. Skipped when the name table cannot be read.
+    """
+    try:
+        from pymol import setting
+
+        names = setting.get_name_list()
+    except Exception:
+        return
+    if name in names:
+        return
+    close = difflib.get_close_matches(name, names, n=3)
+    hint = "; did you mean %s?" % ", ".join(close) if close else ""
+    raise ValueError("unknown setting '%s'%s" % (name, hint))
+
+
 def _finite_vector(value):
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         raise ValueError("vector must contain exactly three finite numbers")
@@ -820,6 +958,7 @@ def build_command_dispatcher(cmd):
 
     def _set(args):
         name = _check_setting_name(args.get("setting", ""))
+        _require_known_setting(name)
         value = args.get("value", "")
         selection = args.get("selection")
         scope = args.get("scope")
@@ -840,6 +979,21 @@ def build_command_dispatcher(cmd):
                 raise ValueError("object scope requires an existing object name")
             if scope == "atom":
                 selection = _atom_scope(selection)
+        elif isinstance(value, str) and value.strip()[:1] in ("(", "["):
+            # `set label_position, (3,3,0)` as PyMOL itself accepts it. Parsed
+            # here as three numbers rather than handed on as text to evaluate.
+            text = value.strip()
+            try:
+                if text[-1] not in ")]":
+                    raise ValueError
+                value = _finite_vector(
+                    [float(item) for item in text[1:-1].split(",")]
+                )
+            except ValueError:
+                raise ValueError(
+                    "a bracketed setting value must be three finite numbers, "
+                    "such as (3, 0, 0)"
+                )
         if selection:
             _reject_control_characters(selection)
             return cmd.set(name, value, selection)
@@ -1644,6 +1798,7 @@ def build_command_dispatcher(cmd):
         smuggle in code.
         """
         name = _check_setting_name(args.get("name", ""))
+        _require_known_setting(name)
         sel = args.get("selection") or "all"
         _reject_control_characters(sel)
 
@@ -2526,6 +2681,8 @@ class SocketServer:
         cmd_type = command.get("type", "")
         if cmd_type == "instance_info":
             return describe_instance(self.port)
+        if cmd_type == "history_event":
+            return _record_client_event(command)
         if cmd_type != "structured_command":
             return {"executed": False, "error": f"Unknown message type: {cmd_type}"}
 
@@ -2536,7 +2693,7 @@ class SocketServer:
             return {"executed": False, "error": "command must be a non-empty string"}
         if not isinstance(command.get("args", {}), dict):
             return {"executed": False, "error": "args must be a JSON object"}
-        for field in ("source", "replay"):
+        for field in ("source", "replay", "call_id", "tool"):
             if command.get(field) is not None and not isinstance(command[field], str):
                 return {"executed": False, "error": "%s must be a string" % field}
 
@@ -2548,8 +2705,14 @@ class SocketServer:
         received_commands.append(f"{cmd_name} {json.dumps(args)}")
 
         if self.command_callback and cmd_name:
+            started = time.perf_counter()
             result = self.command_callback(cmd_name, args)
-            _record_history(cmd_name, args, source, result, replay)
+            duration_ms = round((time.perf_counter() - started) * 1000, 1)
+            _record_history(
+                cmd_name, args, source, result, replay, duration_ms,
+                (command.get("call_id") or "")[:64],
+                (command.get("tool") or "")[:64],
+            )
             return result
 
     def stop(self):

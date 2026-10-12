@@ -528,7 +528,11 @@ environment. `failed_only=True` finds the attempt that did not work;
 filter never comes back empty just because recent traffic was something else.
 
 Each record has `session_id`, `command`, `args`, `source` (audit provenance),
-`ok`, `replayable`, and either `output` or `error`. The session ID includes the
+`ok`, `replayable`, `duration_ms` (time inside PyMOL), and either `output` or
+`error`. `call_id` and `tool` say which MCP tool call sent it: one
+`execute_batch` shares a `call_id` across its commands, and `set_setting`
+shares one with its own `inspect_setting` read-back, so adjacent records are
+not necessarily separate calls. The session ID includes the
 PyMOL PID so concurrent instances cannot collide on one script. A replayable
 record additionally has `replay`, containing validated PyMOL syntax or a list
 of lines for a composite operation. Read-only typed calls
@@ -546,6 +550,13 @@ from a clean process without inheriting an existing scene:
 ```
 pymol -r ~/.pymol-mcp/session-20260722-114646-43120.pml
 ```
+
+Input the server refused before sending anything is recorded too, as an
+`event: "rejected"` record with the original text in `source` (or the typed
+arguments in `args`) and the reason in `detail`. `failed_only=True` includes
+them. `render_movie` leaves one record with its outcome and output path; its
+frames are not recorded individually. The `.pml` header names the plugin build
+and PyMOL version that wrote the session.
 
 Two caveats. The history is per PyMOL launch, so a restart starts a new `.pml`
 while `history.jsonl` keeps appending. Anything the user did in the GUI is not
@@ -802,24 +813,27 @@ set label_color, white        # black background
 
 For clustered labels:
 ```
-set label_position, -5 -5 5     # spaces, NOT (-5,-5,5) -- see below
+set label_position, (-5,-5,5)
 set label_connector, on
 set label_connector_color, grey40
 set label_outline_color, white
 ```
 
-### Float3 settings need spaces, not commas
+### Float3 settings take a bracketed vector
 
-`set` matches `^set\s+([\w.]+)(?:\s*,\s*([^,]+))?(?:\s*,\s*(.+))?$`, and the
-**value group forbids commas**. So the usual PyMOL form fails:
+A bracketed value is read as one argument, so PyMOL's usual form works, with or
+without a selection after it. The space-separated form is still accepted:
 
 ```
-set label_position, (3,3,3)     # could not convert string to float: '(3'
-set label_position, 2 2 2       # works
+set label_position, (3,3,3)
+set label_position, (3,3,3), bac and chain C and resi 291 and name C1'
+set label_position, 2 2 2
 ```
 
-Confirm with `inspect_setting label_position`, which reports back
-`[ 2.00000, 2.00000, 2.00000 ]`. The same applies to any float3 setting.
+The brackets must hold exactly three numbers. Confirm with
+`inspect_setting label_position`. The same applies to any float3 setting. A
+PyMOL started before this was fixed still answers `could not convert string to
+float: '(3'`; use `set_setting` there, or restart it.
 
 Two limits worth knowing before you promise a layout. `label_position` is
 **global** — every label shifts by the same vector, so labels cannot be placed

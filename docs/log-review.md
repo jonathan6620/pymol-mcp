@@ -54,3 +54,46 @@ server metrics for tool counts, batch sizes, parser rejection categories, and
 socket round trips. Avoid recording raw arguments by default. Compare those
 metrics on the same synthetic task before adding broad new tools or caching
 scene-dependent inspection results.
+
+# Local log review, October 2026
+
+The October 12 review inspected the 3,381 entries recorded after the September
+review, through October 12, 2026. Five failed. No test traffic reached personal
+history after the September isolation change.
+
+## Findings addressed
+
+- One `set label_position, (3,3,0), <selection>` failed because the parser split
+  the bracketed vector at its first comma. The `set` pattern now reads a
+  bracketed value as one argument, and the plugin converts it to three finite
+  numbers instead of passing text on. `set_setting` remains the typed route.
+- One `inspect_movie` reached a PyMOL started before that command existed and
+  was reported as `Unknown command`, which the server classified as a syntax
+  error. The server now says the running plugin is older and how to fix it.
+  Session scripts also name the plugin build that wrote them.
+- Three `render_movie` calls wrote 303 per-frame `png` records, about 12% of the
+  history bytes in the window, and no record of the movie. A movie now leaves
+  one record with its outcome and output path.
+- One `inspect_setting` on a misspelled name returned a bare `unknown setting`.
+  The plugin now names the nearest settings.
+- A failed command with replay syntax was marked `replayable`. The replay
+  script was already correct; the flag now requires success.
+
+## History additions
+
+The September review could not see parser rejections, MCP call boundaries, or
+timing. Records now carry `duration_ms` and the `call_id` and `tool` of the MCP
+call that sent them, and the server asks the plugin to record input it rejected
+itself. These are local, like the rest of the history, and rejected input goes
+through the same path redaction as arguments on export.
+
+Two readings of this snapshot were wrong until the code was checked, and both
+would have been answered by `call_id`: 50 adjacent `set`/`inspect_setting`
+pairs were `set_setting` reading back its own write, and a 300-step
+`frame`/`png` loop was `render_movie`.
+
+## Limits
+
+Rejections are recorded only while a PyMOL is reachable, and arguments that
+fail schema validation in the MCP framework never reach the tool, so neither
+is counted. Typed tool results are still not stored.

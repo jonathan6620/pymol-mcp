@@ -384,6 +384,11 @@ class HistoryEntry(BaseModel):
     detail: str | None = None
     replayable: bool = False
     file: HistoryFile | None = None
+    # Time PyMOL spent executing the command, excluding the socket round trip.
+    duration_ms: float | None = None
+    # Shared by every record one MCP tool call produced, with that tool's name.
+    call_id: str | None = None
+    tool: str | None = None
 
 
 class History(BaseModel):

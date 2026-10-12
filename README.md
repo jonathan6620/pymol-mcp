@@ -329,7 +329,7 @@ closing. Two files in `~/.pymol-mcp/`:
 
 | File | Contents |
 |---|---|
-| `history.jsonl` | Every MCP command with its arguments, outcome, and any error |
+| `history.jsonl` | Every MCP command with its arguments, outcome, timing, and any error, plus input the server rejected |
 | `session-<timestamp>-<pid>.pml` | Validated state-changing commands, replayed from a clean state |
 
 Replay a session, or reuse it as a figure script:
@@ -353,6 +353,15 @@ but never enter the `.pml`; typed state changes are rendered as real PyMOL
 commands rather than Python dictionary strings. Every replay script starts with
 `reinitialize`, and `load` paths are made absolute in the PyMOL process that
 resolved them.
+
+Each command record also has `duration_ms`, the time PyMOL spent executing it,
+and the `call_id` and `tool` of the MCP tool call that sent it, so the several
+commands of one `execute_batch` or `set_setting` call can be grouped. Input
+rejected by the server before reaching PyMOL, such as text the parser did not
+recognise or a typed argument that failed validation, is recorded as an
+`event: "rejected"` entry while a PyMOL is connected. `render_movie` records
+one entry for the whole animation rather than one per frame. The first lines of
+each `.pml` name the plugin build and PyMOL version that wrote it.
 
 This deterministically reproduces MCP-controlled state. Changes made directly
 in the GUI are outside the protocol and therefore cannot be replayed.

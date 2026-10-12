@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import contextvars
+import functools
 import json
 import logging
 import os
@@ -9,6 +11,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import uuid
 import zlib
 from contextlib import asynccontextmanager
 from glob import glob
@@ -196,7 +199,11 @@ PYMOL_COMMANDS: dict[str, CommandDef] = {
     ),
     "set": CommandDef(
         description="Sets a PyMOL setting to a specified value",
-        pattern=r"^set\s+([\w.]+)(?:\s*,\s*([^,]+))?(?:\s*,\s*(.+))?$",
+        # A bracketed value may contain commas: set label_position, (3,3,0)
+        pattern=(
+            r"^set\s+([\w.]+)"
+            r"(?:\s*,\s*(\([^()]*\)|\[[^\[\]]*\]|[^,]+))?(?:\s*,\s*(.+))?$"
+        ),
         parameters=[
             ParameterDef(name="setting", required=True),
             ParameterDef(name="value", required=True),
@@ -990,6 +997,17 @@ else:
 # PYMOL SOCKET CONNECTION
 ##############################################################################
 
+STALE_PLUGIN_HINT = (
+    "The socket plugin running in PyMOL is older than this server: run "
+    "`make install-plugin` and restart PyMOL."
+)
+
+# (call id, tool name) of the MCP tool call in progress, set by _tool. Sent
+# with every recorded command so the history can group what one call did.
+_current_call: contextvars.ContextVar[tuple[str, str] | None] = (
+    contextvars.ContextVar("pymol_mcp_call", default=None)
+)
+
 
 class PyMOLConnection:
     def __init__(self, host: str = "localhost", port: int = 9876) -> None:
@@ -1045,15 +1063,44 @@ class PyMOLConnection:
         sock = self.sock
         if sock is None:  # Narrow the attribute after connect() for type checkers.
             raise ConnectionError("Not connected to PyMOL")
+        call = _current_call.get()
         request = SocketRequest(
-            command=command, args=args, source=source, replay=replay
+            command=command, args=args, source=source, replay=replay,
+            # Only recorded commands carry provenance; see _record_history.
+            call_id=call[0] if call and source else None,
+            tool=call[1] if call and source else None,
         )
+        # exclude_none keeps the payload byte-identical to before `source`
+        # existed whenever it is unset, so an older plugin sees no change.
+        response = self._round_trip(
+            request.model_dump(exclude_none=True),
+            timeout or _command_timeout(command, args),
+        )
+        message = response.get("message")
+        if (
+            response.get("status") == "error"
+            and isinstance(message, str)
+            and message.startswith("Unknown command: ")
+        ):
+            # The server only sends commands it knows, so a plugin that does
+            # not know one predates it. Typically a PyMOL left running across
+            # an upgrade.
+            response["message"] = f"{message}. {STALE_PLUGIN_HINT}"
+        return response
+
+    def send_history_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Ask the plugin to record something only the server observed."""
+        if not self.sock and not self.connect():
+            raise ConnectionError("Not connected to PyMOL")
+        return self._round_trip({"type": "history_event", **event}, 5.0)
+
+    def _round_trip(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        sock = self.sock
+        if sock is None:
+            raise ConnectionError("Not connected to PyMOL")
         try:
-            # exclude_none keeps the payload byte-identical to before `source`
-            # existed whenever it is unset, so an older plugin sees no change.
-            payload = request.model_dump(exclude_none=True)
             sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-            sock.settimeout(timeout or _command_timeout(command, args))
+            sock.settimeout(timeout)
             while b"\n" not in self._recv_buffer:
                 chunk = sock.recv(4096)
                 if not chunk:
@@ -1392,6 +1439,74 @@ mcp = FastMCP(
     "PyMOLMCPServer", instructions=SERVER_INSTRUCTIONS, lifespan=server_lifespan
 )
 
+
+def _record_history_event(
+    event: str,
+    *,
+    ok: bool = False,
+    args: dict[str, Any] | None = None,
+    detail: str | None = None,
+    source: str | None = None,
+    path: str | None = None,
+    instance: int | None = None,
+    connection: PyMOLConnection | None = None,
+) -> None:
+    """Best-effort history record for something only the server observed.
+
+    The plugin owns history.jsonl, so this is a request to it. It never raises
+    and never changes a tool's result: with no PyMOL listening, an ambiguous
+    instance, or a plugin too old to know the message, the event is dropped.
+    """
+    call = _current_call.get()
+    payload: dict[str, Any] = {
+        "event": event, "ok": ok,
+        "args": json.loads(json.dumps(args or {}, default=_event_default)),
+    }
+    for key, value in (("detail", detail), ("source", source), ("path", path),
+                       ("call_id", call and call[0]), ("tool", call and call[1])):
+        if value:
+            payload[key] = value
+    try:
+        conn = connection or get_pymol_connection(instance)
+        conn.send_history_event(payload)
+    except Exception as error:  # noqa: BLE001 - recording must not fail a tool
+        logger.debug(f"History event not recorded: {error}")
+
+
+def _event_default(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(exclude_none=True)
+    return str(value)
+
+
+def _tool() -> Any:
+    """Register an MCP tool whose socket traffic is attributable to one call.
+
+    Also records input the tool rejected itself. A ValueError raised here never
+    reaches PyMOL, so without this the history shows only the mistakes that got
+    past validation.
+    """
+    def decorate(fn: Any) -> Any:
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            token = _current_call.set((uuid.uuid4().hex[:12], fn.__name__))
+            try:
+                return fn(*args, **kwargs)
+            except ValueError as error:
+                _record_history_event(
+                    "rejected",
+                    args={k: v for k, v in kwargs.items()
+                          if k != "ctx" and v is not None},
+                    detail=str(error),
+                    source=f"typed {fn.__name__}",
+                    instance=kwargs.get("instance"),
+                )
+                raise
+            finally:
+                _current_call.reset(token)
+        return mcp.tool()(wrapper)
+    return decorate
+
 ##############################################################################
 # MCP TOOL: parse_and_execute
 ##############################################################################
@@ -1409,6 +1524,10 @@ def _execute_user_command(
         command_name = result.command
         args = result.args
     except ValueError as ve:
+        _record_history_event(
+            "rejected", detail=str(ve), source=user_input.strip(),
+            instance=instance, connection=connection,
+        )
         return (
             f"No recognized PyMOL command or parameter issue: {ve}",
             False,
@@ -1467,7 +1586,11 @@ def _execute_user_command(
         parsed = SocketResponse(**response)
         if parsed.status != "success":
             message = parsed.message or "Unknown error"
-            check_error = analyze_pymol_output(message)
+            # Not a syntax error, whatever the wording suggests.
+            check_error = (
+                None if STALE_PLUGIN_HINT in message
+                else analyze_pymol_output(message)
+            )
             if check_error:
                 return f"Command failed: {check_error}", False, conn
             return f"Command error: {message}", False, conn
@@ -1493,7 +1616,7 @@ def _execute_user_command(
         return f"Execution error: {e}", False, connection
 
 
-@mcp.tool()
+@_tool()
 def parse_and_execute(
     ctx: Context, user_input: str, instance: int | None = None
 ) -> str:
@@ -1569,7 +1692,7 @@ def _execute_batch(
     return "\n".join(results)
 
 
-@mcp.tool()
+@_tool()
 def execute_batch(
     ctx: Context,
     commands: list[str],
@@ -1589,7 +1712,7 @@ def _direct_output(response: dict[str, Any]) -> str:
     return str(parsed.result or "")
 
 
-@mcp.tool()
+@_tool()
 def get_view(ctx: Context, instance: int | None = None) -> list[float]:
     """Return the current PyMOL camera as an 18-value list."""
     response = get_pymol_connection(instance).send_command(
@@ -1601,7 +1724,7 @@ def get_view(ctx: Context, instance: int | None = None) -> list[float]:
     return [float(item) for item in value]
 
 
-@mcp.tool()
+@_tool()
 def set_view(
     ctx: Context, view: list[float], instance: int | None = None
 ) -> str:
@@ -1617,7 +1740,7 @@ def set_view(
     return "Camera view restored."
 
 
-@mcp.tool()
+@_tool()
 def get_setting(
     ctx: Context, name: str, instance: int | None = None
 ) -> Any:
@@ -1819,7 +1942,7 @@ def _introspect(
     return result
 
 
-@mcp.tool()
+@_tool()
 def get_chains(
     ctx: Context, object: str = "all", instance: int | None = None
 ) -> Chains:
@@ -1833,7 +1956,7 @@ def get_chains(
     )
 
 
-@mcp.tool()
+@_tool()
 def count(ctx: Context, selection: Selector, instance: int | None = None) -> Counts:
     """Count atoms, residues and chains in a selection."""
     return Counts.model_validate(
@@ -1841,7 +1964,7 @@ def count(ctx: Context, selection: Selector, instance: int | None = None) -> Cou
     )
 
 
-@mcp.tool()
+@_tool()
 def list_residues(
     ctx: Context,
     selection: Selector,
@@ -1862,7 +1985,7 @@ def list_residues(
     )
 
 
-@mcp.tool()
+@_tool()
 def contacts(
     ctx: Context,
     selection: Selector,
@@ -1895,7 +2018,7 @@ def contacts(
     )
 
 
-@mcp.tool()
+@_tool()
 def get_gaps(
     ctx: Context,
     object: str = "all",
@@ -1913,7 +2036,7 @@ def get_gaps(
     return Gaps.model_validate(_introspect("get_gaps", args, instance))
 
 
-@mcp.tool()
+@_tool()
 def get_secondary_structure(
     ctx: Context, selection: Selector, instance: int | None = None
 ) -> SecondaryStructure:
@@ -1935,7 +2058,7 @@ def get_secondary_structure(
     )
 
 
-@mcp.tool()
+@_tool()
 def get_sequence(
     ctx: Context, selection: Selector, instance: int | None = None
 ) -> Sequence:
@@ -1950,7 +2073,7 @@ def get_sequence(
     )
 
 
-@mcp.tool()
+@_tool()
 def measure(
     ctx: Context,
     selection1: Selector,
@@ -1976,7 +2099,7 @@ def measure(
     )
 
 
-@mcp.tool()
+@_tool()
 def clear_selections(ctx: Context, instance: int | None = None) -> ClearedSelections:
     """Delete every named selection, and report which were removed.
 
@@ -1989,7 +2112,7 @@ def clear_selections(ctx: Context, instance: int | None = None) -> ClearedSelect
     )
 
 
-@mcp.tool()
+@_tool()
 def inspect_setting(
     ctx: Context,
     name: str,
@@ -2077,7 +2200,7 @@ def _set_setting(
     )
 
 
-@mcp.tool()
+@_tool()
 def set_setting(
     ctx: Context,
     name: str,
@@ -2111,7 +2234,7 @@ def _translate(
     )
 
 
-@mcp.tool()
+@_tool()
 def translate(
     ctx: Context, selection: Selector, vector: Vector3,
     state: Annotated[int, Field(ge=0)] = 0,
@@ -2176,7 +2299,7 @@ def _unset_setting(
     )
 
 
-@mcp.tool()
+@_tool()
 def unset_setting(
     ctx: Context,
     name: str,
@@ -2204,7 +2327,7 @@ def unset_setting(
     return _unset_setting(ctx, name, selection, scope, instance)
 
 
-@mcp.tool()
+@_tool()
 def get_representations(
     ctx: Context, selection: Selector | None = None, instance: int | None = None
 ) -> Representations:
@@ -2231,7 +2354,7 @@ def get_representations(
     )
 
 
-@mcp.tool()
+@_tool()
 def get_history(
     ctx: Context,
     limit: int = 20,
@@ -2260,7 +2383,7 @@ def get_history(
     return History.model_validate(_introspect("get_history", args, instance))
 
 
-@mcp.tool()
+@_tool()
 def export_session(
     ctx: Context,
     filename: str,
@@ -2289,7 +2412,7 @@ def export_session(
     return SessionExport.model_validate(_introspect("export_session", args, instance))
 
 
-@mcp.tool()
+@_tool()
 def save_file(
     ctx: Context,
     filename: str,
@@ -2403,7 +2526,7 @@ def _label_text(
     return _direct_output(response) or "Label text applied"
 
 
-@mcp.tool()
+@_tool()
 def label_text(
     ctx: Context, selection: Selector, text: str, instance: int | None = None,
 ) -> str:
@@ -2433,7 +2556,7 @@ def _select(
     )
 
 
-@mcp.tool()
+@_tool()
 def apply(
     ctx: Context,
     command: str,
@@ -2452,7 +2575,7 @@ def apply(
     return _apply(ctx, command, selection, value, instance)
 
 
-@mcp.tool()
+@_tool()
 def select(
     ctx: Context,
     name: str,
@@ -2511,7 +2634,7 @@ def _configure_movie(
     ))
 
 
-@mcp.tool()
+@_tool()
 def inspect_movie(ctx: Context, instance: int | None = None) -> MovieInfo:
     """Inspect frame-to-state mapping, playback, FPS, and per-object states.
 
@@ -2522,7 +2645,7 @@ def inspect_movie(ctx: Context, instance: int | None = None) -> MovieInfo:
     return MovieInfo.model_validate(_introspect("inspect_movie", {}, instance))
 
 
-@mcp.tool()
+@_tool()
 def configure_movie(
     ctx: Context, segments: list[MovieSegment], fps: int = 10,
     loop: bool = True, ping_pong: bool = False, instance: int | None = None,
@@ -2538,7 +2661,7 @@ def configure_movie(
     return _configure_movie(segments, fps, loop, ping_pong, instance)
 
 
-@mcp.tool()
+@_tool()
 def control_movie(
     ctx: Context, action: Literal["play", "pause", "seek"],
     frame: int | None = None, instance: int | None = None,
@@ -2704,12 +2827,8 @@ def _render_movie(
                     send("frame", {"frame_number": start_frame + index, "trigger": 0})
                 previous_index = index
                 frame_path = work / f"f{index:05d}.png"
-                response = connection.send_command(
-                    "png", {"filename": str(frame_path), "width": width,
-                            "height": height, "ray": int(ray), "quiet": 1},
-                    source="typed render_movie frame",
-                )
-                _direct_output(response)
+                send("png", {"filename": str(frame_path), "width": width,
+                             "height": height, "ray": int(ray), "quiet": 1})
                 if not frame_path.exists():
                     raise RuntimeError(
                         f"PyMOL did not write frame {index}: {frame_path}"
@@ -2768,7 +2887,7 @@ def _render_movie(
     ), path
 
 
-@mcp.tool()
+@_tool()
 def render_movie(
     ctx: Context,
     filename: str,
@@ -2801,10 +2920,26 @@ def render_movie(
     Defaults are deliberately small and un-raytraced: a ray-traced frame takes
     seconds, so 24 of them is a minute of waiting for a preview.
     """
-    meta, path = _render_movie(
-        ctx, filename, mode, frames, axis, width, height, fps, ray,
-        start_state, instance, start_frame,
-    )
+    # One history record for the movie. Its frames are sent unrecorded: a
+    # record each buried the session and still never said how the movie ended.
+    requested = {
+        "filename": filename, "mode": mode, "frames": frames, "axis": axis,
+        "width": width, "height": height, "fps": fps, "ray": ray,
+        "start_state": start_state, "start_frame": start_frame,
+    }
+    try:
+        meta, path = _render_movie(
+            ctx, filename, mode, frames, axis, width, height, fps, ray,
+            start_state, instance, start_frame,
+        )
+    except ValueError:
+        raise  # Rejected before rendering; _tool records that.
+    except Exception as error:
+        _record_history_event(
+            "render_movie", args=requested, detail=str(error),
+            source="typed render_movie", instance=instance,
+        )
+        raise
     summary = (
         f"Rendered {meta.frames} frames at {meta.width}x{meta.height}, "
         f"{meta.duration_ms / 1000:g} seconds, "
@@ -2812,11 +2947,15 @@ def render_movie(
     )
     if meta.note:
         summary += f" ({meta.note})"
+    _record_history_event(
+        "render_movie", ok=True, args=requested, detail=summary,
+        source="typed render_movie", path=meta.path, instance=instance,
+    )
     mime = "image/webp" if path.suffix.lower() == ".webp" else "image/gif"
     return _image_result(meta, summary, path, mime)
 
 
-@mcp.tool()
+@_tool()
 def render_png(
     ctx: Context,
     filename: str,
@@ -2869,7 +3008,7 @@ def _launch_pymol(timeout: float = PYMOL_START_TIMEOUT) -> str:
     return f"PyMOL started: instance={instance['port']}{pid}: {objects}"
 
 
-@mcp.tool()
+@_tool()
 def launch_pymol(ctx: Context, timeout: float = PYMOL_START_TIMEOUT) -> str:
     """
     Opens one new PyMOL GUI and waits for its MCP socket listener.
@@ -2886,7 +3025,7 @@ def launch_pymol(ctx: Context, timeout: float = PYMOL_START_TIMEOUT) -> str:
     return _launch_pymol(timeout)
 
 
-@mcp.tool()
+@_tool()
 def list_instances(ctx: Context) -> str:
     """
     Lists the running PyMOL instances and what each has loaded.
@@ -2922,7 +3061,7 @@ def list_instances(ctx: Context) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def list_commands(ctx: Context, filter: str = "") -> str:
     """
     Lists the PyMOL commands `parse_and_execute` accepts.

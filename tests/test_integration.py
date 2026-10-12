@@ -945,6 +945,81 @@ def test_translation_and_vector_settings_survive_replay(instances, tmp_path):
 
 
 @requires_pymol
+def test_history_records_what_only_the_server_sees(
+    instances, tmp_path, monkeypatch
+):
+    """The October 2026 log review: vectors, rejections, movies, timing."""
+    from pymol_mcp.api import SettingReport
+
+    # Image is part of the stubbed framework; the animation itself is checked
+    # on disk below.
+    monkeypatch.setattr(server, "_image_result", lambda meta, *rest: meta)
+    inst = _one_instance(instances)
+    tools = {call.args[0].__name__: call.args[0]
+             for call in server.mcp.tool.return_value.call_args_list}
+    inst.send("fragment", {"name": "ala"}, replay="fragment ala")
+
+    # PyMOL's own vector syntax, which the parser used to split at the commas.
+    output = tools["parse_and_execute"](
+        ctx=None, user_input="set label_position, (3,2,1), ala and name CA",
+        instance=inst.port,
+    )
+    assert "error" not in output.lower(), output
+    report = SettingReport.model_validate(inst.send(
+        "inspect_setting",
+        {"name": "label_position", "selection": "ala and name CA"},
+    )["result"]["data"])
+    assert report.values[0].value == [3, 2, 1]
+
+    reply = inst.send("inspect_setting", {"name": "stick_radiu"})
+    assert "did you mean" in reply["message"] and "stick_radius" in reply["message"]
+
+    rejected = tools["parse_and_execute"](
+        ctx=None, user_input="please colour it red", instance=inst.port
+    )
+    assert rejected.startswith("No recognized PyMOL command")
+    with pytest.raises(ValueError):
+        tools["render_movie"](ctx=None, filename=str(tmp_path / "spin.mp4"),
+                              instance=inst.port)
+    movie = tmp_path / "spin.gif"
+    tools["render_movie"](ctx=None, filename=str(movie), frames=3, width=64,
+                          height=64, instance=inst.port)
+    assert movie.exists()
+
+    entries = inst.send("get_history", {"limit": 500})["result"]["data"]["entries"]
+    vector = next(e for e in entries if e.get("command") == "set")
+    assert vector["tool"] == "parse_and_execute" and vector["call_id"]
+    assert vector["duration_ms"] >= 0 and vector["replayable"]
+    parser, typed = [e for e in entries if e.get("event") == "rejected"]
+    assert parser["source"] == "please colour it red"
+    assert parser["tool"] == "parse_and_execute" and not parser["ok"]
+    assert typed["tool"] == "render_movie"
+    assert typed["args"]["filename"].endswith("spin.mp4")
+    (summary,) = [e for e in entries if e.get("command") == "render_movie"]
+    assert summary["ok"] and summary["file"]["path"] == str(movie.resolve())
+    assert summary["args"]["frames"] == 3
+    # The frames themselves, and the stepping between them, leave no record.
+    assert not [e for e in entries if e.get("command") in ("png", "turn")]
+
+    script = Path(inst.send("get_history", {})["result"]["data"]["script"])
+    assert "# Written by: plugin " in script.read_text()
+    assert "turn" not in script.read_text()
+    verify = tmp_path / "verify_vector.py"
+    verify.write_text(
+        "from pymol import cmd\n"
+        f"cmd.do('@{script}')\n"
+        "values = []\n"
+        "cmd.iterate('ala and name CA', 'values.append(s.label_position)', "
+        "space={'values': values})\n"
+        "assert list(values[0]) == [3.,2.,1.], values\n"
+        "print('VECTOR_REPLAY_OK')\n"
+    )
+    proc = subprocess.run([PYMOL, "-cq", str(verify)], capture_output=True,
+                          text=True, timeout=60)
+    assert "VECTOR_REPLAY_OK" in proc.stdout, proc.stdout + proc.stderr
+
+
+@requires_pymol
 def test_translate_changes_only_the_requested_state(tmp_path):
     script = tmp_path / "state_translation.py"
     script.write_text(
